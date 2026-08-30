@@ -24,6 +24,9 @@ showInfo.onclick = async () => {
 };
 const composeUrl = new URL(location.href);
 const sessionId = crosspostSessionIdFromUrl(location.href);
+// A fresh compose has no captured text to wait for — show the real placeholder
+// immediately instead of the "Loading…" hint (knowable synchronously from the URL).
+if (isFreshComposerUrl(location.href)) document.querySelector("#postText").placeholder = "What do you want to share?";
 let draft = null;
 let composerReady = false;
 let queuedVideoResolution = null;

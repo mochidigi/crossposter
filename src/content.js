@@ -501,7 +501,7 @@
     return composerHasText(element);
   }
 
-  async function pasteComposerText(element, value, timeoutMs = 1800) {
+  async function pasteComposerText(element, value, options = {}) {
     if (!element || element.isConnected === false) return false;
     if (!value) return true;
     if (composerHasText(element)) return true;
@@ -509,11 +509,15 @@
     try {
       const transfer = new DataTransfer(); transfer.setData("text/plain", value);
       element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
-      await waitForElement(() => composerHasText(element) ? element : null, timeoutMs);
+      // Some controlled editors accept the paste but update their readable DOM
+      // late. For those editors, a second insertText fallback duplicates the
+      // caption; allow the platform adapter to make paste the single attempt.
+      if (options.fallback === false) return true;
+      await waitForElement(() => composerHasText(element) ? element : null, options.timeoutMs || 1800);
     } catch {}
     if (composerHasText(element)) return true;
     setComposerText(element, value);
-    try { await waitForElement(() => composerHasText(element) ? element : null, timeoutMs); }
+    try { await waitForElement(() => composerHasText(element) ? element : null, options.timeoutMs || 1800); }
     catch {}
     return composerHasText(element);
   }

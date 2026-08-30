@@ -119,7 +119,14 @@
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector), 20000); }
         catch { return helpers.manualResult("Open Threads’ New thread composer, then use the Crossposter sidebar."); }
       }
-      const textInserted = await helpers.pasteComposerText(field, String(handoff.text || "").slice(0, 500));
+      // Threads can accept a synthetic paste before its contenteditable text
+      // becomes readable. Do not follow that successful paste with insertText,
+      // which would append a duplicate caption.
+      const textInserted = await helpers.pasteComposerText(
+        field,
+        String(handoff.text || "").slice(0, 500),
+        { fallback: false }
+      );
       let mediaInserted = 0;
       if (files.length) {
         const root = helpers.closestDeep(field, "[role='dialog'], dialog") || document;

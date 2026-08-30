@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Crossposter",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A free, open-source browser extension to share social media post — text, images, and even video — from one platform to another.",
   "icons": {
     "16": "icons/icon-16.png",
