@@ -434,3 +434,6 @@ input, select { color: #111; background: #fff; }
   .onboarding-copy h2 { font-size: 29px; }
   .history-item { align-items: flex-start; flex-direction: column; }
 }
+
+.version-tag { margin: 2px 0 0; color: var(--muted, #666); font-size: 12px; letter-spacing: .04em; }
+.clip-actions .version-tag { margin-right: auto; }

@@ -27,3 +27,5 @@ if (drafts.length) {
     if (opened?.ok) window.close();
   };
 }
+
+document.querySelector("#version").textContent = `v${ext.runtime.getManifest().version}`;

@@ -92,6 +92,7 @@ if (addLink) addLink.onclick = () => { if (draft.sourceUrl && !text.value.includ
 
 text.addEventListener("input", () => { draft.text = text.value; renderMeta(); });
 document.querySelector("#settingsOpen").onclick = openSettings;
+document.querySelector("#settingsVersion").textContent = `v${ext.runtime.getManifest().version}`;
 document.querySelector("#settingsClose").onclick = closeSettings;
 document.querySelector("#settingsCancel").onclick = closeSettings;
 document.querySelector("#settingsSave").onclick = saveSettings;

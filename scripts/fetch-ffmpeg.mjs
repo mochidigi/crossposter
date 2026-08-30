@@ -11,6 +11,9 @@ const run = promisify(execFile);
 const OUT = "src/vendor/ffmpeg";
 const TMP = "src/vendor/.ffmpeg-tmp";
 const PKGS = [
+  // Keep the core pinned to the wrapper's own CORE_VERSION (see
+  // @ffmpeg/ffmpeg dist/esm/const.js) — newer cores exist on npm but the
+  // wrapper is only tested against its paired core, so bump both together.
   { name: "@ffmpeg/ffmpeg", version: "0.12.10", dist: "dist/esm", dest: "ffmpeg" },
   // ESM core: the vendored ffmpeg worker runs as a module worker and loads the
   // core via `import()`, which needs the ESM build's `export default`, not UMD.
