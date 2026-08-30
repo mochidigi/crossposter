@@ -1,0 +1,90 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Compose</title><link rel="stylesheet" href="styles.css"></head>
+<body><header class="topbar"><a class="logo"><img class="brand-icon" src="icons/icon-32.png" alt=""> Crossposter</a><div class="topbar-actions"><button id="showInfo" class="info-button" type="button" aria-label="About Crossposter and getting started">i</button><button id="historyOpen" class="topbar-settings" type="button"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>History</button><button id="settingsOpen" class="topbar-settings" type="button"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.07A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.07A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 10 3.04V3h4v.07a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 7l-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.96 10H21v4h-.07A1.7 1.7 0 0 0 19.4 15Z"/></svg>Settings</button></div></header>
+<main class="layout">
+  <section class="composer-card">
+    <div class="eyebrow">New crosspost</div><h1 id="composerTitle">Share it your way.</h1><p id="composerLede" class="lede">Polish the original, choose your destinations, then continue in each native composer.</p>
+    <label class="field-label" for="postText">Post</label><textarea id="postText" maxlength="3000" placeholder="What do you want to share?"></textarea>
+    <div class="text-meta"><span id="source"></span><span id="count">0 / 3000</span></div>
+    <div id="media" class="media-grid"></div>
+    <div class="attach-row"><label class="attach-button"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add media<input id="file" type="file" accept="image/*,video/*" multiple hidden></label><button id="addLink" class="quiet" hidden><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m10.5 13.5 3-3m-6.3 6.3-1 .9a3.5 3.5 0 1 1-4.9-4.9l3.5-3.5a3.5 3.5 0 0 1 4.9 0m7.1-2.1 1-.9a3.5 3.5 0 1 1 4.9 4.9l-3.5 3.5a3.5 3.5 0 0 1-4.9 0"/></svg>Add source link</button></div>
+  </section>
+  <aside class="publish-card"><div class="eyebrow">Destinations</div><h2>Where should it go?</h2><div id="destinations"></div><div id="errors" class="errors"></div><button id="publish" class="primary publish">Continue <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></button><p class="fineprint">Crossposter opens and fills each native composer.<br />You review and post.</p></aside>
+</main>
+<section id="handoffOverlay" class="handoff-overlay" role="dialog" aria-modal="true" aria-labelledby="handoffOverlayTitle" hidden>
+  <div class="handoff-overlay-card">
+    <div class="eyebrow">Native handoff</div>
+    <h2 id="handoffOverlayTitle">Crossposting started</h2>
+    <p>Review and publish your post in the native composer tabs.</p>
+    <button id="handoffCancel" class="secondary" type="button">Cancel crosspost</button>
+    <p id="handoffCancelError" class="errors" role="alert"></p>
+  </div>
+</section>
+<dialog id="settingsDialog" class="preferences-dialog" aria-labelledby="settingsTitle">
+  <section class="preferences-card">
+    <header class="clip-head"><div><div class="eyebrow">Settings</div><h2 id="settingsTitle">Platforms</h2></div><button id="settingsClose" class="clip-close" type="button" aria-label="Close settings"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+    <p class="preferences-copy">Enabled platforms appear as destinations and receive Crossposter’s page integration. Choose which should be selected by default.</p>
+    <div class="platform-preference-head"><span>Platform</span><span>Enabled</span><span>Default</span></div>
+    <div id="settingsDestinations" class="preferences-options"></div>
+    <label class="inline-action-preference"><span><strong>Show Crosspost shortcuts</strong><small>Add Crosspost to post actions on X, LinkedIn, Facebook, and Threads.</small></span><input id="settingsInlineActions" type="checkbox"></label>
+    <p id="settingsError" class="errors" role="alert"></p>
+    <section class="settings-danger" aria-labelledby="clearDataTitle">
+      <strong id="clearDataTitle">Clear all data</strong>
+      <p>Delete saved drafts, history, preferences, reminders, temporary media, and open Crossposter sessions.</p>
+      <button id="settingsClearData" class="danger-button" type="button">Clear all Crossposter data</button>
+      <p id="settingsClearError" class="errors" role="alert"></p>
+    </section>
+    <footer class="clip-actions"><button id="settingsCancel" class="secondary" type="button">Cancel</button><button id="settingsSave" class="primary" type="button">Save settings</button></footer>
+  </section>
+</dialog>
+<dialog id="historyDialog" class="preferences-dialog history-dialog" aria-labelledby="historyTitle">
+  <section class="preferences-card">
+    <header class="clip-head"><div><div class="eyebrow">Saved work</div><h2 id="historyTitle">Draft history</h2></div><button id="historyClose" class="clip-close" type="button" aria-label="Close history"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+    <p class="preferences-copy">Crossposter saves the 20 most recent handoffs. Because posting happens on each platform, restore anything you still need or delete work you have finished.</p>
+    <div id="historyList" class="history-list"></div>
+    <footer class="clip-actions"><button id="historyDone" class="primary" type="button">Done</button></footer>
+  </section>
+</dialog>
+<dialog id="clipDialog" class="clip-dialog" aria-labelledby="clipTitle">
+  <section class="clip-card">
+    <header class="clip-head"><div><div class="eyebrow">Video clipper</div><h2 id="clipTitle">Choose the moment</h2></div><button id="clipClose" class="clip-close" type="button" aria-label="Close clipper"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+    <div id="clipStage" class="clip-stage">
+      <video id="clipPreview" controls preload="metadata"></video>
+      <div id="clipCropOverlay" class="clip-crop-overlay" hidden>
+        <div id="clipCropBox" class="clip-crop-box" tabindex="0" role="group" aria-label="Video crop area. Drag to reposition, or drag a corner to resize.">
+          <span class="clip-crop-handle nw" data-crop-handle="nw" aria-hidden="true"></span><span class="clip-crop-handle ne" data-crop-handle="ne" aria-hidden="true"></span><span class="clip-crop-handle sw" data-crop-handle="sw" aria-hidden="true"></span><span class="clip-crop-handle se" data-crop-handle="se" aria-hidden="true"></span>
+        </div>
+      </div>
+    </div>
+    <div class="clip-playback"><button id="clipPlay" class="secondary" type="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" fill="currentColor"/></svg>Play selection</button><span id="clipSelection">Loading video…</span></div>
+    <div class="clip-range">
+      <div class="clip-range-labels"><label for="clipStart">Start <output id="clipStartLabel">0:00.0</output></label><label for="clipEnd">End <output id="clipEndLabel">0:00.0</output></label></div>
+      <div id="clipRangeTrack" class="clip-range-track">
+        <input id="clipStart" type="range" min="0" max="1" step="0.1" value="0" aria-label="Clip start" disabled>
+        <input id="clipEnd" type="range" min="0" max="1" step="0.1" value="1" aria-label="Clip end" disabled>
+      </div>
+    </div>
+    <div class="clip-markers"><button id="clipMarkStart" class="quiet" type="button"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 4v16M18 7l-5 5 5 5"/></svg>Set start to playhead</button><button id="clipMarkEnd" class="quiet" type="button"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M18 4v16M6 7l5 5-5 5"/></svg>Set end to playhead</button></div>
+    <label class="editor-field">Crop video <select id="clipCrop"><option value="">Original</option><option value="1">Square · 1:1</option><option value="0.8">Portrait · 4:5</option><option value="1.7777777778">Landscape · 16:9</option></select></label>
+    <p id="clipCropHelp" class="fineprint clip-crop-help" hidden>Drag the crop area to reposition it. Drag a corner to resize; arrow keys nudge it.</p>
+    <progress id="clipProgress" max="1" value="0" hidden></progress>
+    <p id="clipError" class="errors" role="alert"></p>
+    <p class="fineprint clip-note">Fast trimming preserves the original quality. Cropping re-encodes the picture; uncropped cut points may move slightly to the nearest keyframe.</p>
+    <footer class="clip-actions"><button id="clipCancel" class="secondary" type="button"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>Cancel</button><button id="clipApply" class="primary" type="button" disabled>Use clip<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button></footer>
+  </section>
+</dialog>
+<dialog id="imageDialog" class="clip-dialog image-dialog" aria-labelledby="imageTitle">
+  <section class="clip-card">
+    <header class="clip-head"><div><div class="eyebrow">Image editor</div><h2 id="imageTitle">Crop &amp; mark up</h2></div><button id="imageClose" class="clip-close" type="button" aria-label="Close image editor">×</button></header>
+    <div class="image-toolstrip" role="toolbar" aria-label="Image editing tools">
+      <button class="active" data-image-tool="select" type="button">Select</button><button data-image-tool="highlight" type="button">Highlight</button><button data-image-tool="rectangle" type="button">Rectangle</button><button data-image-tool="arrow" type="button">Arrow</button><button data-image-tool="text" type="button">Text</button><button id="imageCropStart" data-image-tool="crop" type="button">Crop</button><label class="image-color-control">Colour <input id="imageColor" type="color" value="#ff2d55" aria-label="Annotation colour"></label><button id="imageRotate" class="image-icon-button" type="button" aria-label="Rotate" title="Rotate"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66"/><path d="M20 4v7h-7"/></svg></button><span class="image-toolbar-actions"><button id="imageUndo" class="image-icon-button" type="button" aria-label="Undo" title="Undo"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 7-5 5 5 5"/><path d="M4 12h9a7 7 0 0 1 7 7"/></svg></button><button id="imageRedo" class="image-icon-button" type="button" aria-label="Redo" title="Redo"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a7 7 0 0 0-7 7"/></svg></button></span>
+    </div>
+    <div id="imageCropControls" class="image-crop-controls" aria-label="Crop options" hidden>
+      <div class="image-crop-presets"><button class="active" data-image-crop="free" type="button">Free</button><button data-image-crop="square" type="button">Square · 1:1</button><button data-image-crop="portrait" type="button">Portrait · 4:5</button><button data-image-crop="landscape" type="button">Landscape · 16:9</button></div>
+      <div class="image-crop-actions"><button id="imageCropCancel" type="button" aria-label="Cancel crop">×</button><button id="imageCropApply" type="button" aria-label="Apply crop">✓</button></div>
+    </div>
+    <div class="image-stage"><canvas id="imageCanvas"></canvas></div>
+    <p id="imageError" class="errors" role="alert"></p>
+    <footer class="clip-actions"><button id="imageCancel" class="secondary" type="button">Cancel</button><button id="imageApply" class="primary" type="button">Use image</button></footer>
+  </section>
+</dialog>
+<div id="toast" role="status"></div><script type="module" src="compose.js"></script></body></html>

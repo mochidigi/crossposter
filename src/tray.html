@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Crossposter handoff</title>
+  <link rel="stylesheet" href="tray.css">
+</head>
+<body>
+  <header class="tray-head"><img src="icons/icon-32.png" alt=""><div><strong>Crossposter</strong><span>Native handoff</span></div></header>
+  <main>
+    <p class="close-warning">Closing this sidebar closes all open crosspost tab groups.</p>
+    <div id="sessions" class="sessions" aria-label="Open crossposts"></div>
+    <p id="status" class="status">Waiting for content…</p>
+    <div id="targets" class="targets" hidden></div>
+    <section id="empty" class="empty"><p>Prepare a post in Crossposter, choose your destinations, then select <b>Continue</b>.</p></section>
+    <section id="content" hidden>
+      <div id="textSection" hidden>
+        <h2>Text</h2>
+        <div id="textCard" class="drag-card text-card" draggable="true" title="Drag this text into a composer"></div>
+        <button id="copyText" class="button" type="button">Copy text</button>
+      </div>
+      <div id="mediaSection" hidden>
+        <h2>Media</h2>
+        <p id="mediaHint" class="hint">Drag a file directly into the destination’s upload area.</p>
+        <div id="media"></div>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="tray.js"></script>
+</body>
+</html>

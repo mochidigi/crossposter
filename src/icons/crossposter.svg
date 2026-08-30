@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Crossposter branching-arrow mark">
+  <rect x="10" y="10" width="236" height="236" fill="#050505"/>
+  <g fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M128 201v-62c0-17-7-28-20-41L67 57"/>
+    <path d="M128 139c0-17 7-28 20-41l41-41"/>
+    <path d="M67 57h39M67 57v39"/>
+    <path d="M189 57h-39M189 57v39"/>
+  </g>
+  <circle cx="128" cy="139" r="18" fill="#ef3f78"/>
+</svg>

@@ -1,0 +1,7 @@
+firefox.zip
+dist/
+node_modules/
+*.log
+src/vendor/*
+!src/vendor/fabric/
+!src/vendor/fabric/**
