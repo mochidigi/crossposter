@@ -697,6 +697,11 @@ async function cancelNativeHandoff() {
 
 async function publish() {
   const errors = validateDraft(draft); const box = document.querySelector("#errors"); box.textContent = errors.join(" "); if (errors.length) return;
+  // Firefox: sidebarAction.open() only works inside a user-action handler and
+  // the gesture does not survive messaging to the background — open the
+  // sidebar here, synchronously, while the Continue click is still live.
+  // (Chrome routes through sidePanel.open() in the background instead.)
+  if (!ext.sidePanel && ext.sidebarAction?.open) ext.sidebarAction.open().catch(() => {});
   const selected = selectedNativeDestinations(draft), networkIds = selected.map(destination => destination.id), button = document.querySelector("#publish");
   const generation = ++publishGeneration;
   const attemptId = crypto.randomUUID();

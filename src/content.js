@@ -512,7 +512,12 @@
       // Some controlled editors accept the paste but update their readable DOM
       // late. For those editors, a second insertText fallback duplicates the
       // caption; allow the platform adapter to make paste the single attempt.
-      if (options.fallback === false) return true;
+      // Firefox is the exception: a content-script ClipboardEvent's data does
+      // not cross the Xray boundary into page editors (Threads' Lexical never
+      // sees it), so there the paste must be verified and the insertText
+      // fallback kept. Firefox content scripts are detected by the `browser`
+      // global, which Chrome does not define.
+      if (options.fallback === false && !globalThis.browser?.runtime) return true;
       await waitForElement(() => composerHasText(element) ? element : null, options.timeoutMs || 1800);
     } catch {}
     if (composerHasText(element)) return true;

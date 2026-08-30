@@ -705,7 +705,11 @@ async function openTraySurface(sender) {
     }
   }
   if (ext.sidebarAction?.open) {
+    // Firefox only honors open() inside a user-action handler, and the user
+    // gesture does not survive the message hop from the compose page — so the
+    // page opens the sidebar itself on click and this recovers gracefully.
     try { await ext.sidebarAction.open(); return "sidebar"; } catch {}
+    try { if (await ext.sidebarAction.isOpen({})) return "sidebar"; } catch {}
   }
   if (trayWindowId != null) {
     try { await ext.windows.update(trayWindowId, { focused: true }); return "window"; }
