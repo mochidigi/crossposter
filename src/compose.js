@@ -11,13 +11,17 @@ import { DRAFT_HISTORY_KEY, draftHistoryEntry, removeDraftHistoryEntry, upsertDr
 import { continueLabel, isNativeDestinationDisabled, NATIVE_DESTINATIONS, selectedNativeDestinations } from "./shared/destinations.js";
 import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinations, inlineActionsEnabled, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY } from "./shared/preferences.js";
 import { isFreshComposerUrl } from "./shared/compose-mode.js";
-import { setupOnboarding } from "./shared/onboarding.js";
-import { mediaDownloadDescriptor } from "./shared/downloaders.js";
-import { crosspostSessionIdFromUrl } from "./shared/crosspost-sessions.js";
+import { CROSSPOST_SESSIONS_KEY, crosspostSessionIdFromUrl } from "./shared/crosspost-sessions.js";
 import { settleVideoResolution } from "./shared/video-resolution-state.js";
 
 const showInfo = document.querySelector("#showInfo");
-setupOnboarding(showInfo);
+// Onboarding markup is only needed when the info button is used; import it on
+// demand (setupOnboarding rewires the click handler for subsequent opens).
+showInfo.onclick = async () => {
+  const { setupOnboarding } = await import("./shared/onboarding.js");
+  setupOnboarding(showInfo);
+  showInfo.onclick();
+};
 const composeUrl = new URL(location.href);
 const sessionId = crosspostSessionIdFromUrl(location.href);
 let draft = null;
@@ -34,11 +38,21 @@ if (composeUrl.searchParams.get("onboarding") === "1") {
   showInfo.click();
 }
 
-const [stored, sessionResponse] = await Promise.all([
+const moduleStartAt = performance.now();
+// Read the session snapshot straight from storage.session: the background
+// persists it before creating this tab, and a direct read avoids waking the
+// background event page (a visible cost on Firefox). Messaging stays as the
+// fallback for snapshots that have not landed yet.
+const [stored, directSessions] = await Promise.all([
   ext.storage.local.get(["pendingDraft", DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY]),
-  sessionId ? ext.runtime.sendMessage({ type: "GET_CROSSPOST_SESSION", sessionId }).catch(() => null) : null
+  sessionId && ext.storage.session?.get ? ext.storage.session.get(CROSSPOST_SESSIONS_KEY).catch(() => null) : null
 ]);
-const crosspostSession = sessionResponse?.session;
+let crosspostSession = directSessions?.[CROSSPOST_SESSIONS_KEY]?.find(candidate => candidate?.id === sessionId) || null;
+if (sessionId && !crosspostSession) {
+  const sessionResponse = await ext.runtime.sendMessage({ type: "GET_CROSSPOST_SESSION", sessionId }).catch(() => null);
+  crosspostSession = sessionResponse?.session || null;
+}
+const dataLoadedAt = performance.now();
 const freshCompose = crosspostSession?.fresh === true || isFreshComposerUrl(location.href);
 const objectUrls = [];
 const streamPreparationTasks = new WeakMap();
@@ -75,7 +89,9 @@ let activeHandoffAttemptId = crosspostSession?.handoff?.attemptId || "";
 draft.destinations = initialDraftDestinations(draft, stored[DEFAULT_DESTINATIONS_KEY], enabledPlatforms);
 // First paint: text and destinations immediately; media hydration reads blobs
 // from IndexedDB and stays off the critical path.
-text.value = draft.text; renderMeta(); renderDestinations();
+text.value = draft.text; text.placeholder = "What do you want to share?";
+renderMeta(); renderDestinations();
+console.debug(`[crossposter] first paint ${Math.round(performance.now())}ms since navigation (module start ${Math.round(moduleStartAt)}ms, data loaded ${Math.round(dataLoadedAt)}ms)`);
 draft.media = await hydrateStoredMedia(draft.media);
 renderAll();
 composerReady = true;
@@ -352,6 +368,9 @@ async function downloadVideo(index, button) {
       await prepareStreamPreview(index, item);
       item = draft.media[index];
     }
+    // Resolver modules are only needed for downloads; keep them out of the
+    // startup graph (same principle as the lazy Fabric.js import).
+    const { mediaDownloadDescriptor } = await import("./shared/downloaders.js");
     const descriptor = mediaDownloadDescriptor(item);
     if (descriptor.container === "hls") {
       await ext.storage.local.set({ pendingDownload: descriptor });

@@ -437,3 +437,8 @@ input, select { color: #111; background: #fff; }
 
 .version-tag { margin: 2px 0 0; color: var(--muted, #666); font-size: 12px; letter-spacing: .04em; }
 .clip-actions .version-tag { margin-right: auto; }
+
+/* Startup skeletons: shown only while the containers are still empty. */
+#source:empty::before { content: "Loading…"; color: var(--muted, #888); animation: loading-hint 1.2s ease-in-out infinite alternate; }
+#destinations:empty::before { content: "Loading destinations…"; display: block; padding: 10px 0; color: var(--muted, #888); animation: loading-hint 1.2s ease-in-out infinite alternate; }
+@keyframes loading-hint { from { opacity: .35; } to { opacity: .9; } }
