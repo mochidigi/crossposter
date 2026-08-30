@@ -2,7 +2,6 @@ import { ext } from "./shared/browser.js";
 import { createDraft, validateDraft } from "./shared/draft.js";
 import { canCommitClip, MIN_CLIP_SECONDS, normalizeTrimRange, trimVideo, videoCropFromNormalized } from "./shared/video-editor.js";
 import { canvasBlob } from "./shared/image-editor.js";
-import { DEFAULT_MARKUP_COLOR, FabricImageEditor } from "./shared/fabric-image-editor.js";
 import { icon } from "./shared/icons.js";
 import { handoffFilename } from "./shared/handoff.js";
 import { muxMp4Tracks } from "./shared/hls.js";
@@ -35,15 +34,16 @@ if (composeUrl.searchParams.get("onboarding") === "1") {
   showInfo.click();
 }
 
-const stored = await ext.storage.local.get(["pendingDraft", DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY]);
-const sessionResponse = sessionId ? await ext.runtime.sendMessage({ type: "GET_CROSSPOST_SESSION", sessionId }).catch(() => null) : null;
+const [stored, sessionResponse] = await Promise.all([
+  ext.storage.local.get(["pendingDraft", DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY]),
+  sessionId ? ext.runtime.sendMessage({ type: "GET_CROSSPOST_SESSION", sessionId }).catch(() => null) : null
+]);
 const crosspostSession = sessionResponse?.session;
 const freshCompose = crosspostSession?.fresh === true || isFreshComposerUrl(location.href);
 const objectUrls = [];
 const streamPreparationTasks = new WeakMap();
 let streamPreparationQueue = Promise.resolve();
 draft = createDraft(crosspostSession?.draft || (freshCompose ? {} : stored.pendingDraft || {}));
-draft.media = await hydrateStoredMedia(draft.media);
 ext.runtime.sendMessage({ type: "REGISTER_NATIVE_TRAY_TAB", sessionId }).catch(() => {});
 let defaultDestinations = normalizeDefaultDestinations(stored[DEFAULT_DESTINATIONS_KEY]);
 let enabledPlatforms = normalizeEnabledPlatforms(stored[ENABLED_PLATFORMS_KEY]);
@@ -73,7 +73,11 @@ let publishBusy = false;
 let publishGeneration = 0;
 let activeHandoffAttemptId = crosspostSession?.handoff?.attemptId || "";
 draft.destinations = initialDraftDestinations(draft, stored[DEFAULT_DESTINATIONS_KEY], enabledPlatforms);
-text.value = draft.text; renderAll();
+// First paint: text and destinations immediately; media hydration reads blobs
+// from IndexedDB and stays off the critical path.
+text.value = draft.text; renderMeta(); renderDestinations();
+draft.media = await hydrateStoredMedia(draft.media);
+renderAll();
 composerReady = true;
 if (queuedVideoResolution) {
   applyCapturedVideoResolution(queuedVideoResolution);
@@ -557,8 +561,12 @@ async function applyClip() {
 async function openImageEditor(index) {
   const item = draft.media[index];
   if (!item || item.kind !== "image") return;
-  imageError.textContent = ""; imageColor.value = DEFAULT_MARKUP_COLOR; setActiveImageCropPreset("free");
+  imageError.textContent = ""; setActiveImageCropPreset("free");
   try {
+    // Fabric.js is ~780 KB; import it only when the editor actually opens so
+    // it stays out of the compose page's startup module graph.
+    const { DEFAULT_MARKUP_COLOR, FabricImageEditor } = await import("./shared/fabric-image-editor.js");
+    imageColor.value = DEFAULT_MARKUP_COLOR;
     const response = await fetch(item.url);
     if (!response.ok) throw new Error(`Could not load the image (${response.status}).`);
     const blob = await response.blob(), sourceUrl = URL.createObjectURL(blob), image = await loadEditorImage(sourceUrl);
