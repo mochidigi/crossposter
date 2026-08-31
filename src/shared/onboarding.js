@@ -4,7 +4,7 @@ const slides = [
   {
     eyebrow: "One place, less repetition",
     title: "Post everywhere, faster.",
-    copy: "Crossposter saves you time posting to multiple social media accounts—right from your browser.",
+    copy: "Crossposter saves you time posting to multiple social media accounts – right from your browser.",
     art: `<svg viewBox="0 0 520 260" role="img" aria-label="One Crossposter post being sent to UpScrolled, X, LinkedIn, Bluesky, Instagram, and Facebook">
       <defs><marker id="onboardingArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#111"/></marker></defs>
       <rect class="art-paper" x="140" y="38" width="240" height="184" rx="3"/><path class="art-line" d="M140 74h240"/><circle class="art-fill" cx="163" cy="56" r="6"/><path class="art-line" d="M178 56h52M169 103h182M169 122h148M169 141h169"/><rect class="art-media" x="169" y="162" width="94" height="34" rx="2"/><path class="art-line" d="M278 170h67M278 182h51M278 194h59"/>

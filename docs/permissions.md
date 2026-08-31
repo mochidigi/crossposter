@@ -17,9 +17,9 @@ active use. This doubles as the justification text for store review.
 | `scripting` | `background.js` (`scripting.registerContentScripts`, `unregisterContentScripts`, `executeScript`) | Registers adapters only for platforms enabled in Settings, removes disabled adapters from future page loads, and refreshes enabled integrations in already-open tabs. Only the extension's own files are injected. |
 | `downloads` | `compose.js` (`downloads.download`) | The **Download video** feature saves the resolved media file via the browser's downloader. |
 | `clipboardWrite` | `tray.js` (async clipboard text and image writes) | The sidebar's explicit "copy text" / "copy image" buttons, used for manual handoff into a composer. |
-| `notifications` | `background.js` (LinkedIn publish notifications) | Notifies the user when their LinkedIn post is detected as published so the crosspost session can continue. |
+| `notifications` | `background.js` (native-post detection notifications) | Offers to crosspost a post the user has just published natively (outside a Crossposter session) to the other platforms. |
 | `sidePanel` (Chrome) / `sidebar_action` (Firefox) | `background.js`, `tray.html` | The browser-owned handoff sidebar that holds text/media for dragging into a site's own composer. |
-| `webRequest` | `background.js:56-70` (non-blocking listeners filtered to LinkedIn's publish endpoint) | Detects that the user's own LinkedIn post request completed, to advance the crosspost session. Observational only — nothing is modified or blocked. |
+| `webRequest` | `background.js` (non-blocking listeners filtered to supported platforms' endpoints) | Detects that the user's own publish request completed, to offer crossposting it, and notes the platform's own video-stream URLs so a post's video can be downloaded or reshared. Observational only — nothing is modified or blocked. |
 
 ## Host permissions
 
