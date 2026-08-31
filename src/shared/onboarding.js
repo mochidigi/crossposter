@@ -1,3 +1,5 @@
+import { setHtml } from "./dom.js";
+
 const slides = [
   {
     eyebrow: "One place, less repetition",
@@ -55,13 +57,13 @@ export function setupOnboarding(trigger) {
   let index = 0;
   const render = () => {
     const slide = slides[index];
-    dialog.querySelector(".onboarding-art").innerHTML = slide.art;
+    setHtml(dialog.querySelector(".onboarding-art"), slide.art);
     dialog.querySelector(".onboarding-copy .eyebrow").textContent = slide.eyebrow;
     dialog.querySelector("h2").textContent = slide.title;
     dialog.querySelector(".onboarding-copy p").textContent = slide.copy;
     dialog.querySelector(".onboarding-back").hidden = index === 0;
     dialog.querySelector(".onboarding-next").textContent = index === slides.length - 1 ? "Start crossposting" : "Next";
-    dialog.querySelector(".onboarding-dots").innerHTML = slides.map((_, dot) => `<button type="button" class="${dot === index ? "active" : ""}" data-slide="${dot}" aria-label="Show step ${dot + 1}" ${dot === index ? 'aria-current="step"' : ""}></button>`).join("");
+    setHtml(dialog.querySelector(".onboarding-dots"), slides.map((_, dot) => `<button type="button" class="${dot === index ? "active" : ""}" data-slide="${dot}" aria-label="Show step ${dot + 1}" ${dot === index ? 'aria-current="step"' : ""}></button>`).join(""));
     dialog.querySelectorAll("[data-slide]").forEach(button => button.onclick = () => { index = Number(button.dataset.slide); render(); });
   };
   const close = () => dialog.close();

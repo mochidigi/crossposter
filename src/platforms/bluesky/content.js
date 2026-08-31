@@ -38,7 +38,7 @@
       const selector = "textarea[placeholder*='What'], [data-testid='composePostTextArea'], [role='dialog'] textarea, [role='dialog'] [contenteditable='true']";
       let field = helpers.findVisible(selector);
       if (!field) {
-        const launch = document.querySelector("[data-testid='composeFAB'], button[aria-label*='New post'], a[href*='/intent/compose']")
+        const launch = helpers.findVisible("[data-testid='composeFAB'], button[aria-label*='compose' i][aria-label*='post' i], a[href*='/intent/compose']")
           || helpers.findClickable("New post", document, element => !element.closest("[role='dialog']"), false);
         if (!launch) return helpers.manualResult("Open Bluesky’s post composer, then use the Crossposter sidebar.");
         launch.click();

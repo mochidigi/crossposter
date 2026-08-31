@@ -1,4 +1,5 @@
 import { ext } from "./shared/browser.js";
+import { setHtml } from "./shared/dom.js";
 import { createDraft, validateDraft } from "./shared/draft.js";
 import { canCommitClip, MIN_CLIP_SECONDS, normalizeTrimRange, trimVideo, videoCropFromNormalized } from "./shared/video-editor.js";
 import { canvasBlob } from "./shared/image-editor.js";
@@ -208,21 +209,21 @@ function renderMeta() {
 }
 function renderDestinations() {
   const enabled = new Set(enabledPlatforms);
-  destinations.innerHTML = NATIVE_DESTINATIONS.filter(destination => enabled.has(destination.id)).map(destination => {
+  setHtml(destinations, NATIVE_DESTINATIONS.filter(destination => enabled.has(destination.id)).map(destination => {
     const disabled = isNativeDestinationDisabled(draft, destination.id);
     const selected = !disabled && draft.destinations.includes(destination.id);
     return `<label class="destination ${selected ? "selected" : ""} ${disabled ? "disabled" : ""}" data-id="${destination.id}"><span class="network-icon"><img src="${destination.icon}" alt=""></span><b>${escapeAttr(destination.label)}</b><input type="checkbox" ${selected ? "checked" : ""} ${disabled ? "disabled" : ""}></label>`;
-  }).join("");
+  }).join(""));
   destinations.querySelectorAll("input").forEach(input => input.onchange = event => { const id = event.target.closest("label").dataset.id; draft.destinations = event.target.checked ? [...new Set([...draft.destinations, id])] : draft.destinations.filter(item => item !== id); renderDestinations(); });
   renderPublishAction();
 }
 
 function openSettings() {
-  settingsDestinations.innerHTML = NATIVE_DESTINATIONS.map(destination => {
+  setHtml(settingsDestinations, NATIVE_DESTINATIONS.map(destination => {
     const enabled = enabledPlatforms.includes(destination.id);
     const checked = defaultDestinations.includes(destination.id);
     return `<div class="platform-preference ${enabled ? "" : "platform-disabled"}" data-platform="${destination.id}"><span class="platform-preference-name"><span class="network-icon"><img src="${destination.icon}" alt=""></span><b>${escapeAttr(destination.label)}</b></span><label class="preference-check"><span class="sr-only">Enable ${escapeAttr(destination.label)}</span><input data-platform-enabled type="checkbox" ${enabled ? "checked" : ""}></label><label class="preference-check"><span class="sr-only">Select ${escapeAttr(destination.label)} by default</span><input data-platform-default type="checkbox" ${checked ? "checked" : ""} ${enabled ? "" : "disabled"}></label></div>`;
-  }).join("");
+  }).join(""));
   settingsDestinations.querySelectorAll("[data-platform-enabled]").forEach(input => input.onchange = () => updatePlatformPreferenceRow(input.closest("[data-platform]")));
   settingsInlineActions.checked = showInlineActions;
   settingsError.textContent = "";
@@ -260,12 +261,12 @@ async function renderHistory() {
     historyList.innerHTML = '<p class="history-empty">No saved handoffs yet. Drafts appear here when you select Continue.</p>';
     return;
   }
-  historyList.innerHTML = history.map(entry => {
+  setHtml(historyList, history.map(entry => {
     const item = entry.draft || {}, preview = item.text?.trim() || (item.media?.length ? "Media post" : "Untitled draft");
     const destinations = (item.destinations || []).map(label).join(", ") || "No destinations";
     const media = item.media?.length ? ` · ${item.media.length} media` : "";
     return `<article class="history-item" data-history-id="${escapeAttr(entry.id)}"><div class="history-copy"><time>${escapeAttr(formatHistoryTime(entry.savedAt))}</time><strong>${escapeAttr(preview.slice(0, 120))}</strong><span>${escapeAttr(destinations)}${media}</span></div><div class="history-actions"><button class="secondary" data-history-restore type="button">Restore</button><button class="icon-button" data-history-delete type="button" aria-label="Delete saved draft" title="Delete">${icon("trash")}</button></div></article>`;
-  }).join("");
+  }).join(""));
   historyList.querySelectorAll("[data-history-restore]").forEach(button => button.onclick = () => restoreHistory(button.closest("[data-history-id]").dataset.historyId));
   historyList.querySelectorAll("[data-history-delete]").forEach(button => button.onclick = () => deleteHistory(button.closest("[data-history-id]").dataset.historyId));
 }
@@ -337,10 +338,10 @@ function renderPublishAction() {
   const button = document.querySelector("#publish"), selected = selectedNativeDestinations(draft), action = continueLabel(selected);
   const mediaBlocked = draft.media.some(item => item?.resolving || item?.resolveError);
   button.disabled = !selected.length || mediaBlocked;
-  button.innerHTML = `${action}${icon("arrow-right")}`;
+  setHtml(button, `${action}${icon("arrow-right")}`);
 }
 function renderMedia() {
-  document.querySelector("#media").innerHTML = draft.media.map((item, index) => {
+  setHtml(document.querySelector("#media"), draft.media.map((item, index) => {
     const video = item.kind === "video";
     const busyMedia = item.resolving || item.preparing;
     const edits = [item.resolveError || "", item.prepareError || "", item.trim ? `Clipped to ${formatTime(item.trim.duration)}` : "", item.crop ? `Cropped ${item.crop}` : "", item.edited ? "Edited image" : ""].filter(Boolean);
@@ -354,7 +355,7 @@ function renderMedia() {
     const download = video ? `<button class="media-download" data-download="${index}" type="button"${disabled}>${icon("download")}Download</button>` : "";
     const busy = busyMedia ? `<div class="media-busy" role="status" aria-live="polite"><span class="media-spinner" aria-hidden="true"></span><span>${item.resolving ? "Locating video…" : "Preparing video…"}</span></div>` : "";
     return `<figure${busyMedia ? ' class="is-preparing"' : ""}><${video ? "video controls preload=metadata" : "img"}${source}${poster}></${video ? "video" : "img"}>${busy}<button class="media-remove" data-remove="${index}" aria-label="Remove media">${icon("trash")}</button><div class="media-actions">${edit}${download}</div>${note}</figure>`;
-  }).join("");
+  }).join(""));
   document.querySelectorAll("[data-remove]").forEach(button => button.onclick = () => {
     const [removed] = draft.media.splice(Number(button.dataset.remove), 1); releaseObjectUrl(removed?.url); renderMedia(); renderPublishAction();
   });
@@ -645,7 +646,7 @@ function setClipBusy(busy) {
   clipCropBox.dataset.disabled = String(busy);
   document.querySelector("#clipCancel").disabled = false;
   document.querySelector("#clipClose").disabled = false;
-  clipApply.innerHTML = busy ? `${icon("refresh")}Creating clip…` : `Use clip${icon("check")}`;
+  setHtml(clipApply, busy ? `${icon("refresh")}Creating clip…` : `Use clip${icon("check")}`);
 }
 
 function closeClipper() {
@@ -653,7 +654,7 @@ function closeClipper() {
   resetClipCropSelection();
   clipPreview.pause(); clipPreview.removeAttribute("src"); clipPreview.load();
   if (clipDialog.open) clipDialog.close();
-  clipState = null; clipError.textContent = ""; clipApply.innerHTML = `Use clip${icon("check")}`;
+  clipState = null; clipError.textContent = ""; setHtml(clipApply, `Use clip${icon("check")}`);
 }
 
 function releaseObjectUrl(url) {
@@ -708,7 +709,7 @@ async function publish() {
   activeHandoffAttemptId = attemptId;
   publishBusy = true;
   button.disabled = true;
-  button.innerHTML = `Preparing…${icon("refresh")}`;
+  setHtml(button, `Preparing…${icon("refresh")}`);
   setHandoffActive(true);
   // Sidebar APIs require a live user gesture. Open the extension-owned surface
   // before any asynchronous storage or media work, then populate it while the

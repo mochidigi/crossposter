@@ -62,7 +62,9 @@ let ffmpegPromise;
 export function loadFfmpeg() {
   if (!ffmpegPromise) {
     ffmpegPromise = (async () => {
-      const { FFmpeg } = await import(ext.runtime.getURL("vendor/ffmpeg/ffmpeg/index.js"));
+      // Static relative specifier (same URL as runtime.getURL) so AMO's linter
+      // doesn't flag a dynamic import argument.
+      const { FFmpeg } = await import("../vendor/ffmpeg/ffmpeg/index.js");
       const ffmpeg = new FFmpeg();
       await ffmpeg.load({
         coreURL: ext.runtime.getURL("vendor/ffmpeg/core/ffmpeg-core.js"),

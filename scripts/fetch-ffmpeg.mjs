@@ -4,7 +4,7 @@
 // explicit refresh of the pinned packages.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const run = promisify(execFile);
@@ -17,7 +17,12 @@ const PKGS = [
   { name: "@ffmpeg/ffmpeg", version: "0.12.10", dist: "dist/esm", dest: "ffmpeg" },
   // ESM core: the vendored ffmpeg worker runs as a module worker and loads the
   // core via `import()`, which needs the ESM build's `export default`, not UMD.
-  { name: "@ffmpeg/core", version: "0.12.6", dist: "dist/esm", dest: "core" }
+  // Only the core itself is taken — 0.12.6's dist/esm also ships a copy of the
+  // wrapper JS (classes.js, worker.js, …) that nothing loads, and its worker.js
+  // trips AMO's dynamic-import lint. That looks like a packaging accident: when
+  // bumping the version, check whether dist/esm still contains the stray
+  // wrapper files — if upstream fixed it, this `files` allowlist can go.
+  { name: "@ffmpeg/core", version: "0.12.6", dist: "dist/esm", dest: "core", files: ["ffmpeg-core.js", "ffmpeg-core.wasm"] }
 ];
 
 async function runNpm(args) {
@@ -42,8 +47,25 @@ for (const pkg of PKGS) {
   const { stdout } = await runNpm(["pack", `${pkg.name}@${pkg.version}`, "--pack-destination", TMP]);
   const tarball = stdout.trim().split("\n").pop();
   await run("tar", ["-xzf", path.join(TMP, tarball), "-C", TMP]);
-  await cp(path.join(TMP, "package", pkg.dist), path.join(OUT, pkg.dest), { recursive: true });
+  if (pkg.files) {
+    await mkdir(path.join(OUT, pkg.dest), { recursive: true });
+    for (const file of pkg.files) await cp(path.join(TMP, "package", pkg.dist, file), path.join(OUT, pkg.dest, file));
+  } else {
+    await cp(path.join(TMP, "package", pkg.dist), path.join(OUT, pkg.dest), { recursive: true });
+  }
 }
+
+// AMO's linter flags dynamic `import()` arguments (UNSAFE_VAR_ASSIGNMENT). The
+// extension always loads the core from the vendored location (shared/hls.js
+// passes exactly that coreURL), so hardwire the specifier the wrapper's worker
+// would otherwise receive at runtime. When bumping the wrapper version, check
+// whether upstream made the import lint-safe — if `addons-linter` no longer
+// flags the unpatched worker.js, drop this patch.
+const workerPath = path.join(OUT, "ffmpeg", "worker.js");
+const workerSource = await readFile(workerPath, "utf8");
+const patched = workerSource.replace(/await import\(([\s\S]*?)_coreURL\)/, 'await import("../core/ffmpeg-core.js")');
+if (patched === workerSource) throw new Error("ffmpeg/worker.js: static-import patch no longer applies; re-check the wrapper source");
+await writeFile(workerPath, patched);
 
 await rm(TMP, { recursive: true, force: true });
 console.log(`Fetched ffmpeg assets into ${OUT}/:`, (await readdir(OUT)).join(", "));

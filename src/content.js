@@ -162,8 +162,13 @@
     button.className = "crossposter-inline-button";
     button.setAttribute("aria-label", "Crosspost");
     button.title = "Crosspost";
-    button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h11m0 0-3-3m3 3-3 3M17 17H6m0 0 3 3m-3-3 3-3"/></svg>${adapter.inlineActionText ? `<span>${adapter.inlineActionText}</span>` : ""}`;
-    if (adapter.inlineActionText) button.classList.add("crossposter-inline-button-labeled");
+    button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h11m0 0-3-3m3 3-3 3M17 17H6m0 0 3 3m-3-3 3-3"/></svg>`;
+    if (adapter.inlineActionText) {
+      const label = document.createElement("span");
+      label.textContent = adapter.inlineActionText;
+      button.appendChild(label);
+      button.classList.add("crossposter-inline-button-labeled");
+    }
     bindInlineAction(button, post, adapter, "Crossposter inline action failed:");
     wrapper.appendChild(button);
     return wrapper;
