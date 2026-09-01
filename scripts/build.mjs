@@ -28,8 +28,20 @@ if (!await hasFfmpegAssets()) {
 await rm("dist", { recursive: true, force: true });
 for (const target of ["chrome", "firefox"]) {
   const out = path.join("dist", target);
+  const chromeOnlyExclusions = [
+    path.resolve("src", "background.firefox.js"),
+    path.resolve("src", "platforms", "youtube")
+  ];
   await mkdir(out, { recursive: true });
-  await cp("src", out, { recursive: true, filter: source => !source.includes("manifest.chrome.json") && !source.includes("manifest.firefox.json") });
+  await cp("src", out, {
+    recursive: true,
+    filter: source => {
+      const resolved = path.resolve(source);
+      if (source.includes("manifest.chrome.json") || source.includes("manifest.firefox.json")) return false;
+      if (target === "chrome" && chromeOnlyExclusions.some(excluded => resolved === excluded || resolved.startsWith(`${excluded}${path.sep}`))) return false;
+      return true;
+    }
+  });
   await writeFile(path.join(out, "manifest.json"), await readFile(`src/manifest.${target}.json`));
 }
 console.log("Built Chrome and Firefox extensions in dist/.");

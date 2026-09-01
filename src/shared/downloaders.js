@@ -11,13 +11,18 @@ export { resolveUpScrolled, upscrolledManifestUrl } from "../platforms/upscrolle
 export { parseBlueskyPostUrl, resolveBluesky } from "../platforms/bluesky/download.js";
 export { parseFacebookDashManifest, parseFacebookDashTracks, parseFacebookVideoUrl, resolveFacebook } from "../platforms/facebook/download.js";
 
-const resolvers = Object.freeze({
+const resolvers = {
   x: (info, fetcher) => resolveTwitter(info.tweetId, fetcher),
   linkedin: info => resolveLinkedIn(info.sources, info.src),
   upscrolled: info => resolveUpScrolled(info.thumbnail, info.src),
   bluesky: (info, fetcher) => resolveBluesky(info.actor, info.rkey, fetcher),
   facebook: (info, fetcher) => resolveFacebook(info.videoId, info.src, fetcher)
-});
+};
+
+export function registerDownloadResolver(source, resolver) {
+  if (!source || typeof resolver !== "function") throw new Error("Invalid media resolver registration.");
+  resolvers[source] = resolver;
+}
 
 // Route a content adapter's video hint to its platform resolver. New platforms
 // add one resolver module and one entry here; the background worker stays generic.

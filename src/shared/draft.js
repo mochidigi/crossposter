@@ -17,11 +17,20 @@ const PLATFORM_LABELS = Object.freeze({
   web: "the web"
 });
 
+const sourceNetworks = [];
+
+export function registerSourceNetwork(network) {
+  if (!network?.id || !network?.label || typeof network.matches !== "function") throw new Error("Invalid source-network registration.");
+  const index = sourceNetworks.findIndex(item => item.id === network.id);
+  if (index >= 0) sourceNetworks[index] = network;
+  else sourceNetworks.push(network);
+}
+
 export function appendAttribution(text, sourceAuthor, sourceNetwork, maxLength = 3000, sourceIsOwn = false) {
   const body = String(text || "").trim();
   const author = String(sourceAuthor || "").replace(/\s+/g, " ").trim();
   if (!body || !author) return body.slice(0, maxLength);
-  const platform = PLATFORM_LABELS[sourceNetwork] || PLATFORM_LABELS.web;
+  const platform = PLATFORM_LABELS[sourceNetwork] || sourceNetworks.find(network => network.id === sourceNetwork)?.label || PLATFORM_LABELS.web;
   const attribution = `(via ${author} on ${platform})`;
   if (sourceIsOwn) return (body.endsWith(attribution) ? body.slice(0, -attribution.length).trimEnd() : body).slice(0, maxLength);
   if (body.endsWith(attribution)) return body.slice(0, maxLength);
@@ -57,6 +66,8 @@ export function detectNetwork(url = "") {
   if (host === "threads.com" || host.endsWith(".threads.com")) return "threads";
   if (host === "facebook.com" || host.endsWith(".facebook.com")) return "facebook";
   if (host.endsWith("upscrolled.com")) return "upscrolled";
+  const registered = sourceNetworks.find(network => network.matches(host));
+  if (registered) return registered.id;
   return "web";
 }
 

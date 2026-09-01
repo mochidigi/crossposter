@@ -5,13 +5,14 @@ import { nativeDestination } from "./shared/destinations.js";
 import { COMPOSER_GROUP_APPEARANCE, composerTabProperties, shouldRetryCanonicalComposer, shouldRetryMediaAttachment, shouldRetryTextInsertion } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { clearHandoffMedia, readHandoffMediaChunk } from "./shared/media-store.js";
-import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, registeredPlatformContentScripts } from "./shared/content-scripts.js";
+import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, registeredPlatformContentScripts } from "./shared/content-scripts.js";
 import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, inlineActionsEnabled, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY } from "./shared/preferences.js";
 import { linkedInPublishCandidate } from "./shared/linkedin-monitor.js";
 import { linkedInDashManifestRequest, linkedInDashPlaylist, linkedInVhsPlaylist, linkedInVideoRequest, selectLinkedInVideoRequest } from "./platforms/linkedin/network.js";
 import { DETECTED_DRAFTS_KEY, detectedBadgeText, enqueueDetectedDraft, removeDetectedDraft } from "./shared/detected-posts.js";
 import { CROSSPOST_SESSIONS_KEY, crosspostComposerUrl, recordPostedDestination, resetCrosspostHandoff, sessionForTab, sessionPreview, sessionTabIds } from "./shared/crosspost-sessions.js";
 import { markVideoResolving, settleVideoResolution } from "./shared/video-resolution-state.js";
+import { resolvePageVideoHint } from "./shared/source-video.js";
 
 const MENU_ID = "crosspost-studio";
 let trayWindowId = null;
@@ -91,7 +92,8 @@ ext.runtime.onInstalled.addListener(async () => {
   await ext.contextMenus.create({
     id: MENU_ID,
     title: "Crosspost",
-    contexts: ["page", "selection", "link", "image", "video"]
+    contexts: ["page", "selection", "link", "image", "video"],
+    documentUrlPatterns: platformDocumentUrlPatterns()
   });
   const enabled = await synchronizePlatformContentScripts();
   await reinjectOpenPlatformTabs(enabled);
@@ -117,7 +119,7 @@ ext.contextMenus.onClicked.addListener(async (info, tab) => {
   try { captured = await sendContentMessage(tab.id, { type: "CAPTURE_POST" }, frameId) || {}; } catch {}
   const media = chooseContextMedia(info, captured);
   const videoHint = media.some(item => item.kind === "video")
-    ? sendContentMessage(tab.id, { type: "VIDEO_INFO" }, frameId).then(hint => resolvedLinkedInVideoHint(tab.id, hint, frameId))
+    ? capturedVideoHint(tab, frameId)
     : null;
   await openCapturedPost({
     ...captured,
@@ -128,6 +130,14 @@ ext.contextMenus.onClicked.addListener(async (info, tab) => {
     media
   }, videoHint, { windowId: tab?.windowId });
 });
+
+async function capturedVideoHint(tab, frameId) {
+  const platform = platformContentScriptForUrl(tab?.url || tab?.pendingUrl || "");
+  const resolved = await resolvePageVideoHint(platform?.platformId, { ext, tab, frameId }).catch(() => null);
+  if (resolved?.src) return resolved;
+  const hint = await sendContentMessage(tab.id, { type: "VIDEO_INFO" }, frameId);
+  return resolvedLinkedInVideoHint(tab.id, hint, frameId);
+}
 
 async function sendContentMessage(tabId, message, frameId) {
   const options = Number.isInteger(frameId) ? { frameId } : undefined;
@@ -178,7 +188,7 @@ async function reinjectOpenPlatformTabs(enabledPlatforms) {
   await Promise.all(tabs.map(async tab => {
     if (!Number.isInteger(tab.id)) return;
     const platform = platformContentScriptForUrl(tab.url || tab.pendingUrl || "");
-    if (!platform || !enabled.has(platform.platformId)) return;
+    if (!platform || platform.activeTabOnly || (!platform.sourceOnly && !enabled.has(platform.platformId))) return;
     const target = { tabId: tab.id, ...(platform.allFrames ? { allFrames: true } : {}) };
     await ext.scripting.executeScript({ target, files: ["content.js", platform.file] }).catch(() => {});
   }));
@@ -206,7 +216,8 @@ async function reconcileOpenPlatformTabs(previousEnabled, enabledPlatforms, show
     if (!Number.isInteger(tab.id)) return;
     const platform = platformContentScriptForUrl(tab.url || tab.pendingUrl || "");
     if (!platform) return;
-    if (!enabled.has(platform.platformId)) {
+    if (platform.activeTabOnly) return;
+    if (!platform.sourceOnly && !enabled.has(platform.platformId)) {
       if (previous.has(platform.platformId)) {
         await ext.tabs.sendMessage(tab.id, { type: "DISABLE_CROSSPOSTER" }).catch(() => {});
         if (platform.allFrames) {
@@ -218,7 +229,7 @@ async function reconcileOpenPlatformTabs(previousEnabled, enabledPlatforms, show
       }
       return;
     }
-    if (!previous.has(platform.platformId)) {
+    if (platform.sourceOnly || !previous.has(platform.platformId)) {
       await ext.scripting.executeScript({ target: { tabId: tab.id, ...(platform.allFrames ? { allFrames: true } : {}) }, files: ["content.js", platform.file] }).catch(() => {});
     }
     await ext.tabs.sendMessage(tab.id, { type: "SET_INLINE_ACTIONS", enabled: showInlineActions }).catch(() => {});

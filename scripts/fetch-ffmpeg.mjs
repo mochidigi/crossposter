@@ -14,15 +14,14 @@ const PKGS = [
   // Keep the core pinned to the wrapper's own CORE_VERSION (see
   // @ffmpeg/ffmpeg dist/esm/const.js) — newer cores exist on npm but the
   // wrapper is only tested against its paired core, so bump both together.
-  { name: "@ffmpeg/ffmpeg", version: "0.12.10", dist: "dist/esm", dest: "ffmpeg" },
+  { name: "@ffmpeg/ffmpeg", version: "0.12.15", dist: "dist/esm", dest: "ffmpeg" },
   // ESM core: the vendored ffmpeg worker runs as a module worker and loads the
   // core via `import()`, which needs the ESM build's `export default`, not UMD.
-  // Only the core itself is taken — 0.12.6's dist/esm also ships a copy of the
-  // wrapper JS (classes.js, worker.js, …) that nothing loads, and its worker.js
-  // trips AMO's dynamic-import lint. That looks like a packaging accident: when
-  // bumping the version, check whether dist/esm still contains the stray
-  // wrapper files — if upstream fixed it, this `files` allowlist can go.
-  { name: "@ffmpeg/core", version: "0.12.6", dist: "dist/esm", dest: "core", files: ["ffmpeg-core.js", "ffmpeg-core.wasm"] }
+  // The `files` allowlist guards against 0.12.6's packaging accident (its
+  // dist/esm also shipped a stray copy of the wrapper JS whose worker.js
+  // tripped AMO's dynamic-import lint). 0.12.9 ships only these two files,
+  // but the allowlist stays as insurance against a regression.
+  { name: "@ffmpeg/core", version: "0.12.9", dist: "dist/esm", dest: "core", files: ["ffmpeg-core.js", "ffmpeg-core.wasm"] }
 ];
 
 async function runNpm(args) {
