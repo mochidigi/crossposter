@@ -2,6 +2,7 @@ firefox.zip
 dist/
 node_modules/
 .crossposter-chrome-profile/
+.crossposter-firefox-profile/
 *.log
 src/vendor/*
 !src/vendor/fabric/
