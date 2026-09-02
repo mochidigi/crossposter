@@ -4,6 +4,14 @@ export function handoffFilename(item, index = 0) {
   return `crossposter-${index + 1}.${extension}`;
 }
 
+// CDNs often serve media as a generic octet stream. Platform file inputs
+// filter on the File's MIME type, so a generic type silently drops the video.
+export function handoffMediaType(blobType, kind) {
+  const type = String(blobType || "").trim().toLowerCase();
+  if (type && !/^(?:application|binary)\/octet-stream$/.test(type)) return type;
+  return kind === "video" ? "video/mp4" : "image/jpeg";
+}
+
 export function shouldRetryCanonicalComposer(network, result) {
   return network === "x" && result?.composerOpened === false;
 }
@@ -14,6 +22,27 @@ export function shouldRetryMediaAttachment(network, result, mediaCount) {
 
 export function shouldRetryTextInsertion(network, result, text) {
   return network === "linkedin" && result?.composerOpened === true && Boolean(text) && result.textInserted !== true;
+}
+
+export const COMPOSER_DELIVERY_TIMEOUT_MS = 20000;
+export const COMPOSER_DELIVERY_RETRY_MS = 750;
+
+// "Receiving end does not exist" means no content script is listening in any
+// frame yet (both browsers use this wording).
+export function isMissingContentScriptError(error) {
+  return /receiving end does not exist|could not establish connection/i.test(errorText(error));
+}
+
+// A frame that does not own the composer stays silent, which Chrome reports
+// as a closed port and Firefox as an undefined response. Both mean "ask
+// again shortly", not "the handoff failed".
+export function shouldRetryComposerDelivery(response, error) {
+  if (error) return isMissingContentScriptError(error) || /message port closed before a response|no response/i.test(errorText(error));
+  return response === undefined;
+}
+
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error ?? "");
 }
 
 export function composerTabProperties(url, windowId, active = true) {

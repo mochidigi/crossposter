@@ -44,16 +44,19 @@
           .find(element => helpers.isVisible(element) && /caption|what.*mind|write|share/i.test(`${element.getAttribute("placeholder") || ""} ${element.getAttribute("aria-label") || ""}`))
           || [...dialog.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")].find(helpers.isVisible) || null;
       };
+      const findLauncher = () => helpers.findClickable("Post", document, element => !element.closest("[role='dialog'], dialog"));
       let caption = findCaption(), textInserted = false, mediaInserted = 0, error = "";
       try {
         if (!caption) {
-          const launch = helpers.findClickable("Post", document, element => !element.closest("[role='dialog'], dialog"));
-          if (!launch) throw new Error("Open UpScrolled's composer, then use the Crossposter sidebar.");
+          // The tab reports "complete" before UpScrolled's client app has
+          // rendered its navigation, so the launcher may still be on its way.
+          const launch = await helpers.waitForElement(findLauncher, LAUNCHER_WAIT_MS)
+            .catch(() => { throw new Error("Open UpScrolled's composer, then use the Crossposter sidebar."); });
           launch.click();
           const chooser = await helpers.waitForElement(() => helpers.findDialogWithText("Create a post"));
           const choice = files.some(file => file.type.startsWith("video/")) ? "Video post" : files.length ? "Photo post" : "Text post";
-          const choiceButton = helpers.findClickable(choice, chooser, () => true, false);
-          if (!choiceButton) throw new Error(`Choose “${choice}” in UpScrolled, then use the Crossposter sidebar.`);
+          const choiceButton = await helpers.waitForElement(() => helpers.findClickable(choice, chooser, () => true, false), CHOICE_WAIT_MS)
+            .catch(() => { throw new Error(`Choose “${choice}” in UpScrolled, then use the Crossposter sidebar.`); });
           choiceButton.click();
           caption = await helpers.waitForElement(findCaption);
         }
@@ -64,6 +67,14 @@
           const root = caption.closest("[role='dialog'], dialog") || document;
           await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, false), 15000).catch(() => null);
           mediaInserted = helpers.attachNativeFiles(files, root);
+          // A change event only proves the file reached the input. Count the
+          // attachment once UpScrolled shows the preview (or its "Choose
+          // cover" step for video), so a rejected upload triggers the
+          // background's retry instead of a false success.
+          if (mediaInserted) {
+            const preview = await helpers.waitForElement(() => findMediaPreview(files, helpers), PREVIEW_WAIT_MS).catch(() => null);
+            if (!preview) { mediaInserted = 0; error = "UpScrolled did not show the attached media."; }
+          }
         }
       } catch (caught) {
         error = caught instanceof Error ? caught.message : "Use the Crossposter sidebar to finish the handoff.";
@@ -71,6 +82,21 @@
       return { ok: true, composerOpened: Boolean(caption), textInserted, mediaInserted, error };
     }
   });
+
+  const LAUNCHER_WAIT_MS = 15000;
+  const CHOICE_WAIT_MS = 10000;
+  const PREVIEW_WAIT_MS = 20000;
+
+  function findMediaPreview(files, helpers) {
+    const wantsVideo = files.some(file => file.type.startsWith("video/"));
+    if (wantsVideo) {
+      return helpers.findDialogWithText("Choose cover")
+        || helpers.queryAllDeep("[role='dialog'] video, dialog video").find(helpers.isVisible)
+        || null;
+    }
+    return helpers.queryAllDeep("[role='dialog'] img, dialog img")
+      .find(image => helpers.isVisible(image) && /^(?:blob|data):/i.test(image.currentSrc || image.src || "")) || null;
+  }
 
   function upscrolledCaptureText(post) {
     return [...post.querySelectorAll("p")].map(textWithoutExpansionControls).find(Boolean) || "";

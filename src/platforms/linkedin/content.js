@@ -4,6 +4,14 @@
   const detectionBaselines = new Map();
   const linkedInVideoSourceCache = new Map();
   let completedMediaSignature = "";
+  const COMPOSER_FIELD_SELECTOR = [
+    "[role='dialog'] [contenteditable='true'][role='textbox']",
+    "[role='dialog'] .ql-editor[contenteditable='true']",
+    "[role='dialog'] [contenteditable='true'][data-placeholder]",
+    "[role='dialog'] [contenteditable='true'][aria-label]"
+  ].join(", ");
+  const COMPOSER_WAIT_MS = 30000;
+  const AUTO_OPEN_WAIT_MS = 15000;
   const adapter = {
     id: "linkedin",
     matches: host => host.endsWith("linkedin.com"),
@@ -26,14 +34,10 @@
         ? { container, template: send, templateLabel: "Send" }
         : null;
     },
+    ownsPage: ({ helpers }) => linkedInOwnsPage(helpers),
     async openComposer({ handoff, files, helpers }) {
       if (!location.hostname.endsWith("linkedin.com")) throw new Error("Open LinkedIn in this tab, then use the Crossposter sidebar.");
-      const selector = [
-        "[role='dialog'] [contenteditable='true'][role='textbox']",
-        "[role='dialog'] .ql-editor[contenteditable='true']",
-        "[role='dialog'] [contenteditable='true'][data-placeholder]",
-        "[role='dialog'] [contenteditable='true'][aria-label]"
-      ].join(", ");
+      const selector = COMPOSER_FIELD_SELECTOR;
       const mediaSignature = files.map(file => `${file.name}:${file.size}:${file.lastModified}`).join("|");
       let field = helpers.findVisible(selector);
       let mediaInserted = files.length && mediaSignature === completedMediaSignature ? files.length : 0;
@@ -41,15 +45,21 @@
       if (!field && existingInput) {
         mediaInserted = await finishMediaHandoff(existingInput, files, helpers, selector);
         if (mediaInserted) completedMediaSignature = mediaSignature;
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), 12000); }
+        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), COMPOSER_WAIT_MS); }
+        catch {}
+      }
+      if (!field && composerAutoOpens()) {
+        // LinkedIn opens the share box itself several seconds after the tab
+        // reports "complete". Clicking the launcher in the meantime races its
+        // own open, so give the automatic one a chance first.
+        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), AUTO_OPEN_WAIT_MS); }
         catch {}
       }
       if (!field) {
-        const launch = helpers.queryAllDeep("button, [role='button']")
-          .find(element => helpers.isVisible(element) && !helpers.closestDeep(element, "[role='dialog']") && helpers.normalizeText(element).startsWith("start a post"));
+        const launch = findStartPostLauncher(helpers);
         if (!launch) return helpers.manualResult("Open LinkedIn’s post composer, then use the Crossposter sidebar.");
         launch.click();
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector)); }
+        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), COMPOSER_WAIT_MS); }
         catch { return helpers.manualResult("Open LinkedIn’s post composer, then use the Crossposter sidebar."); }
       }
       if (files.length && !mediaInserted) {
@@ -70,7 +80,7 @@
       }
       if (files.length) {
         field = null;
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), 12000); }
+        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), COMPOSER_WAIT_MS); }
         catch {}
       }
       const textInserted = field
@@ -90,6 +100,29 @@
     }
   };
   core.register(adapter);
+
+  function composerAutoOpens() {
+    return /[?&]shareActive=true(?:&|$)/i.test(location.search || "");
+  }
+
+  function findStartPostLauncher(helpers) {
+    return helpers.queryAllDeep("button, [role='button']")
+      .find(element => helpers.isVisible(element) && !helpers.closestDeep(element, "[role='dialog']") && helpers.normalizeText(element).startsWith("start a post")) || null;
+  }
+
+  function isTopFrame() {
+    try { return globalThis.top === globalThis.self; }
+    catch { return true; }
+  }
+
+  // LinkedIn loads a full-window "preload" iframe next to the document that
+  // renders the feed and the share composer. Only the document with that UI
+  // (or, before it renders, the top document) may answer composer messages.
+  function linkedInOwnsPage(helpers) {
+    if (helpers.findVisible(COMPOSER_FIELD_SELECTOR)) return true;
+    if (findStartPostLauncher(helpers)) return true;
+    return isTopFrame() && Boolean(helpers.findVisible("main, [role='main']"));
+  }
 
   function linkedInVideoInfo({ post, video, helpers }) {
     const assetId = linkedInVideoAssetId(post, video, helpers);

@@ -651,14 +651,27 @@
     if (message.type === "MARK_NATIVE_POSTED") { markPagePosted(); sendResponse({ ok: true }); return; }
     const adapterHandler = currentAdapter()?.messages?.[message.type];
     if (adapterHandler) {
+      if (!ownsPage(currentAdapter())) return false;
       Promise.resolve(adapterHandler({ message, helpers })).then(sendResponse).catch(error => sendResponse({ error: error.message }));
       return true;
     }
     if (message.type === "OPEN_NATIVE_COMPOSER") {
+      // Platforms that load helper iframes (LinkedIn's preload frame) run this
+      // script in every frame, and tabs.sendMessage resolves with whichever
+      // frame answers first. A frame without the composer UI must stay silent
+      // so the background keeps waiting for the frame that has it; `force`
+      // is the background's last resort after that wait expires.
+      if (!message.force && !ownsPage(adapterById(message.network))) return false;
       openNativeComposer(message.network, message.handoff || {}).then(sendResponse).catch(error => sendResponse({ ok: false, error: error.message }));
       return true;
     }
   };
+
+  function ownsPage(adapter) {
+    if (typeof adapter?.ownsPage !== "function") return true;
+    try { return adapter.ownsPage({ helpers }) !== false; }
+    catch { return true; }
+  }
 
   runtime.onMessage.addListener(listener);
   try {

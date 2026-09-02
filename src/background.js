@@ -2,7 +2,7 @@ import { ext } from "./shared/browser.js";
 import { createDraft } from "./shared/draft.js";
 import { resolveReshareMedia } from "./shared/downloaders.js";
 import { nativeDestination } from "./shared/destinations.js";
-import { COMPOSER_GROUP_APPEARANCE, composerTabProperties, shouldRetryCanonicalComposer, shouldRetryMediaAttachment, shouldRetryTextInsertion } from "./shared/handoff.js";
+import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { clearHandoffMedia, readHandoffMediaChunk } from "./shared/media-store.js";
 import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, registeredPlatformContentScripts } from "./shared/content-scripts.js";
@@ -147,15 +147,46 @@ async function sendContentMessage(tabId, message, frameId) {
     // Reloading an unpacked extension invalidates content scripts already
     // running in open tabs. Reinject once under the activeTab grant from the
     // context-menu click, then retry instead of silently opening an empty draft.
-    if (!ext.scripting?.executeScript) throw error;
-    const tab = await ext.tabs.get(tabId);
-    const preferences = await readPlatformPreferences();
-    const files = contentScriptFilesForUrl(tab.url, preferences.enabledPlatforms);
-    if (!files.length) throw error;
-    const target = { tabId, ...(Number.isInteger(frameId) ? { frameIds: [frameId] } : {}) };
-    await ext.scripting.executeScript({ target, files });
+    if (!await reinjectContentScripts(tabId, frameId)) throw error;
     return ext.tabs.sendMessage(tabId, message, options);
   }
+}
+
+async function reinjectContentScripts(tabId, frameId) {
+  if (!ext.scripting?.executeScript) return false;
+  const tab = await ext.tabs.get(tabId);
+  const preferences = await readPlatformPreferences();
+  const files = contentScriptFilesForUrl(tab.url, preferences.enabledPlatforms);
+  if (!files.length) return false;
+  const target = { tabId, ...(Number.isInteger(frameId) ? { frameIds: [frameId] } : {}) };
+  await ext.scripting.executeScript({ target, files });
+  return true;
+}
+
+// Composer messages go to every frame of the tab, and only the frame that
+// renders the platform UI answers. Keep asking until one does: the tab reports
+// "complete" before that frame's content script (or the UI itself) exists.
+async function sendComposerMessage(tabId, message) {
+  const deadline = Date.now() + COMPOSER_DELIVERY_TIMEOUT_MS;
+  let reinjected = false;
+  for (;;) {
+    let response, error = null;
+    try { response = await ext.tabs.sendMessage(tabId, message); }
+    catch (caught) { error = caught; }
+    if (!shouldRetryComposerDelivery(response, error)) {
+      if (error) throw error;
+      return response;
+    }
+    if (error && !reinjected && isMissingContentScriptError(error)) {
+      reinjected = true;
+      if (await reinjectContentScripts(tabId).catch(() => false)) continue;
+    }
+    if (Date.now() >= deadline) break;
+    await delay(COMPOSER_DELIVERY_RETRY_MS);
+  }
+  // No frame claimed the composer in time: make the top document answer so
+  // the user gets its manual-fallback guidance instead of a silent timeout.
+  return ext.tabs.sendMessage(tabId, { ...message, force: true }, { frameId: 0 });
 }
 
 async function readPlatformPreferences() {
@@ -831,7 +862,7 @@ async function fillNativeComposer(target, initialTab, handoff) {
   if (tab.windowId != null) await ext.windows.update(tab.windowId, { focused: true }).catch(() => {});
   await waitForTab(tab.id, tab.status, target.label);
   let result;
-  try { result = await sendContentMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
+  try { result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
   catch (error) { result = { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
   // If X's SPA ignored its visible compose control, use the canonical route as
   // a deterministic fallback and retry after the document has loaded. This is
@@ -839,12 +870,12 @@ async function fillNativeComposer(target, initialTab, handoff) {
   if (shouldRetryCanonicalComposer(target.id, result)) {
     tab = await ext.tabs.update(tab.id, { url: target.homeUrl, active: true });
     await waitForTab(tab.id, tab.status, target.label);
-    try { result = await sendContentMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
+    try { result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
     catch (error) { result = { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
   }
   if (shouldRetryMediaAttachment(target.id, result, handoff.media.length) || shouldRetryTextInsertion(target.id, result, handoff.text)) {
     await delay(1500);
-    try { result = await sendContentMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
+    try { result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
     catch (error) { result = { ok: true, composerOpened: true, textInserted: result.textInserted, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
   }
   if (!result?.ok) result = { ...result, textInserted: false, mediaInserted: 0 };

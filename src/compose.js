@@ -4,7 +4,7 @@ import { createDraft, validateDraft } from "./shared/draft.js";
 import { canCommitClip, MIN_CLIP_SECONDS, normalizeTrimRange, trimVideo, videoCropFromNormalized } from "./shared/video-editor.js";
 import { canvasBlob } from "./shared/image-editor.js";
 import { icon } from "./shared/icons.js";
-import { handoffFilename } from "./shared/handoff.js";
+import { handoffFilename, handoffMediaType } from "./shared/handoff.js";
 import { muxMp4Tracks } from "./shared/hls.js";
 import { isStreamMedia, prepareStreamMedia } from "./shared/media-preparation.js";
 import { deleteHandoffMedia, getHandoffMedia, storeHandoffMedia } from "./shared/media-store.js";
@@ -772,7 +772,7 @@ async function startNativeHandoff(networks, attemptId) {
         reference = await storeHandoffMedia(blob, {
           kind: item.kind,
           name: handoffFilename({ ...item, type: blob.type }, index),
-          type: blob.type || (item.kind === "video" ? "video/mp4" : "image/jpeg"),
+          type: handoffMediaType(blob.type, item.kind),
           lastModified: Date.now()
         });
       }
