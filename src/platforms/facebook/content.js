@@ -1,6 +1,41 @@
 (() => {
   const core = globalThis.CrossposterContent;
   if (!core) return;
+  // Facebook localizes button labels and the composer placeholder with the
+  // account language. Its feed keeps stable data-ad-rendering-role hooks for
+  // post parts; the composer is recognized by shape, with English fallbacks.
+  const hasIcon = element => Boolean(element?.querySelector?.("svg, img, i"));
+  const textOnly = (element, helpers) => helpers.isVisible(element) && !hasIcon(element) && Boolean(helpers.normalizeText(element));
+
+  // The feed/profile composer card is a labelled region (its label, "Create a
+  // post", is localized) holding the viewer's timeline link, one text-only
+  // trigger button, and icon shortcuts (live, photo/video, feeling).
+  function composerLauncher(helpers) {
+    const outsideDialog = element => !element.closest("[role='dialog']");
+    const regionTrigger = helpers.queryAllDeep("[role='region'], [data-pagelet$='Composer']")
+      .filter(region => outsideDialog(region) && region.querySelector?.("a[href]"))
+      .map(region => {
+        const buttons = helpers.queryAllDeep("[role='button']", region).filter(element => helpers.isVisible(element));
+        const text = buttons.filter(element => textOnly(element, helpers));
+        return buttons.length >= 3 && text.length === 1 && buttons.length - text.length >= 2 ? text[0] : null;
+      })
+      .find(Boolean);
+    return regionTrigger
+      || helpers.queryAllDeep("[role='button']")
+        .find(element => helpers.isVisible(element) && outsideDialog(element) && /what.s on your mind/i.test(element.innerText || ""))
+      || null;
+  }
+
+  // The create-post dialog ends with its submit button, the last text-only
+  // control in it (the audience selector and attachment shortcuts carry
+  // icons; "Add to your post" is a text label but precedes the footer).
+  function submitButton(composer, helpers) {
+    const candidates = helpers.queryAllDeep("button, [role='button']", composer)
+      .filter(element => textOnly(element, helpers) && !element.getAttribute?.("aria-haspopup"));
+    const submit = candidates.find(element => helpers.normalizeText(element) === "post") || candidates.at(-1) || null;
+    return submit && submit.getAttribute?.("aria-disabled") !== "true" ? submit : null;
+  }
+
   core.register({
     id: "facebook",
     matches: host => host === "facebook.com" || host.endsWith(".facebook.com"),
@@ -23,7 +58,7 @@
     nativePostSubmission: ({ target, helpers }) => {
       const button = helpers.closestDeep(target, "button, [role='button']");
       const composer = helpers.closestDeep(button, "[role='dialog'], dialog");
-      const submit = helpers.normalizeText(button) === "post";
+      const submit = Boolean(button) && (helpers.normalizeText(button) === "post" || button === submitButton(composer, helpers));
       const field = composer && helpers.findVisible("[contenteditable='true'][role='textbox']", composer);
       if (!button || !composer || !submit || !field) return null;
       return { isOpen: () => composer.isConnected && helpers.isVisible(composer) };
@@ -33,8 +68,7 @@
       const selector = "[role='dialog'] [contenteditable='true'][role='textbox']";
       let field = helpers.findVisible(selector);
       if (!field) {
-        const launch = helpers.queryAllDeep("[role='button']")
-          .find(element => helpers.isVisible(element) && !element.closest("[role='dialog']") && /what.s on your mind/i.test(element.innerText || ""));
+        const launch = composerLauncher(helpers);
         if (!launch) return helpers.manualResult("Open Facebook’s Create post dialog, then use the Crossposter sidebar.");
         launch.click();
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector)); }
@@ -68,7 +102,12 @@
 
   function facebookCaptureText({ post, helpers }) {
     const message = facebookMessageElement(post, helpers);
-    const text = (message?.innerText || message?.textContent || "")
+    // Expanders ("See more" / "Visa mer") are buttons inside the message; drop
+    // them by element so the trailing-label regex is only a fallback.
+    const raw = message && typeof helpers.textWithout === "function" && typeof message.cloneNode === "function"
+      ? helpers.textWithout(message, "[role='button'], button")
+      : message?.innerText || message?.textContent || "";
+    const text = raw
       .replace(/\r\n?/g, "\n")
       .replace(/\s*(?:…|\.\.\.)?\s*see (?:more|less)\s*$/iu, "")
       .trim();
@@ -119,8 +158,11 @@
   async function expandFacebookText(post, helpers) {
     const message = facebookMessageElement(post, helpers);
     if (!message) return;
+    // Only expanders live inside the message body as buttons; match them by
+    // shape (short, text-only) rather than by the localized "See more" label.
     const controls = helpers.queryAllDeep("button, [role='button']", message)
-      .filter(element => /^(?:…|\.\.\.)?\s*see more$/iu.test(helpers.normalizeText(element)));
+      .filter(element => /^(?:…|\.\.\.)?\s*see more$/iu.test(helpers.normalizeText(element))
+        || (!hasIcon(element) && helpers.normalizeText(element).length <= 24 && helpers.normalizeText(element).length > 0));
     controls.forEach(control => control.click?.());
     if (controls.length) await new Promise(resolve => setTimeout(resolve, 0));
   }

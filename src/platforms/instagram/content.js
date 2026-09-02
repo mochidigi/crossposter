@@ -9,20 +9,63 @@
   const metadataByPost = new WeakMap();
   const metadataRequests = new Map();
 
+  // Instagram localizes every icon aria-label ("Dela", "Gilla", …) with the
+  // account language, so identify controls by icon geometry and layout first
+  // and keep the English labels only as a fallback.
+  const ICONS = Object.freeze({
+    like: { paths: ["M16.792 3.904", "M34.6 3.1"], labels: ["like", "unlike"] },
+    comment: { paths: ["M20.656 17.008"], labels: ["comment"] },
+    share: { paths: ["M13.973 20.046", "M22 3L9.218 10.083", "M22 3 9.218 10.083"], labels: ["share"] },
+    create: { paths: ["M21 11h-8V3a1", "M2 12v3.45c0 2.849"], labels: ["new post", "create"] }
+  });
+  const hasIcon = element => Boolean(element?.querySelector?.("svg"));
+  const iconButtons = root => [...(root?.querySelectorAll?.("button, [role='button']") || [])].filter(hasIcon);
+  // Trailing "… more" truncation markers as Instagram renders them in the
+  // most common UI languages; the DOM offers no structural hook for them.
+  const MORE_LABEL = "(?:more|mer|mere|meer|mehr|más|mais|plus|altro|więcej|ещё|еще|daha fazla|続きを読む|更多)";
+  const TRAILING_MORE = new RegExp(`(?:\\.\\.\\.|…)?\\s*${MORE_LABEL}\\s*$`, "iu");
+  const ONLY_MORE = new RegExp(`^${MORE_LABEL}$`, "iu");
+  const AVATAR_ALT = /(?:profile picture|profilbild|foto de perfil|photo de profil|foto del profilo|profielfoto|profilbillede|avatar|emoji|icon)/i;
+
+  // Feed posts keep like, comment, (repost,) and share as icon buttons in one
+  // container, share last; the bookmark sits apart. Locate it by shape.
+  function instagramActionMount(post, helpers) {
+    const buttons = iconButtons(post);
+    const containers = [...new Set(buttons.map(button => button.parentElement).filter(Boolean))];
+    for (const container of containers) {
+      const members = buttons.filter(button => container.contains(button));
+      if (members.length < 3) continue;
+      const share = members.find(button => helpers?.iconMatches?.(button, ICONS.share)) || members.at(-1);
+      const like = members.find(button => helpers?.iconMatches?.(button, ICONS.like)) || members[0];
+      const comment = members.find(button => helpers?.iconMatches?.(button, ICONS.comment)) || members[1];
+      if (share && like && comment && new Set([share, like, comment]).size === 3) return { container, template: share, iconOnly: true };
+    }
+    return null;
+  }
+
+  // Instagram's create dialog keeps its step action ("Next", "Share") as the
+  // text-only control in the header beside the step heading; every other
+  // header control (back, crop, zoom) is an icon.
+  function headerAction(dialog, helpers) {
+    if (!dialog) return null;
+    const textOnly = element => helpers.isVisible(element) && !hasIcon(element) && Boolean(helpers.normalizeText(element));
+    const heading = dialog.querySelector?.("h1, h2, [role='heading']");
+    let row = heading?.parentElement;
+    for (let depth = 0; row && row !== dialog && depth < 3; depth++, row = row.parentElement) {
+      const inHeader = helpers.queryAllDeep("button, [role='button']", row).filter(textOnly);
+      if (inHeader.length) return inHeader.at(-1);
+    }
+    // Notices ("OK") are dialogs without a form: a single text-only button.
+    const hasField = Boolean(dialog.querySelector?.("[contenteditable='true'], textarea, input:not([type='hidden']):not([type='file'])"));
+    const buttons = helpers.queryAllDeep("button, [role='button']", dialog).filter(textOnly);
+    return !hasField && buttons.length === 1 ? buttons[0] : null;
+  }
+
   core.register({
     id: "instagram",
     matches: host => host === "instagram.com" || host.endsWith(".instagram.com"),
     postSelectors: ["article"],
-    inlineActionMount: ({ post }) => {
-      const shareIcon = post.querySelector("svg[aria-label='Share']");
-      const share = shareIcon?.closest("button, [role='button']");
-      const container = share?.parentElement;
-      const likeIcon = post.querySelector("svg[aria-label='Like'], svg[aria-label='Unlike']");
-      const commentIcon = post.querySelector("svg[aria-label='Comment']");
-      if (!share || !container || !likeIcon || !commentIcon) return null;
-      if (!container.contains(likeIcon) || !container.contains(commentIcon)) return null;
-      return { container, template: share, iconOnly: true };
-    },
+    inlineActionMount: ({ post, helpers }) => instagramActionMount(post, helpers),
     prepareCapture: async ({ post }) => {
       if (!post || metadataByPost.has(post)) return;
       const url = instagramSourceUrl(post);
@@ -45,9 +88,9 @@
       const candidates = [...post.querySelectorAll("span[dir='auto']")]
         .filter(element => !element.closest?.("a, button, [role='button']"))
         .map(element => (element.innerText || element.textContent || "").replace(/\u00a0/g, " ").trim())
-        .filter(text => text && !/^more$/i.test(text));
+        .filter(text => text && !ONLY_MORE.test(text));
       return candidates.sort((left, right) => right.length - left.length)[0]
-        ?.replace(/(?:\.\.\.|…)?\s*more\s*$/iu, "").trim() || "";
+        ?.replace(TRAILING_MORE, "").trim() || "";
     },
     captureMedia: ({ post, helpers }) => {
       const resolved = instagramMetadataMedia(metadataByPost.get(post));
@@ -84,7 +127,7 @@
     nativePostSubmission: ({ target, helpers }) => {
       const button = helpers.closestDeep(target, "button, [role='button']");
       const composer = helpers.closestDeep(button, "[role='dialog'], dialog");
-      const submit = helpers.normalizeText(button) === "share";
+      const submit = Boolean(button) && (button === headerAction(composer, helpers) || helpers.normalizeText(button) === "share");
       const field = composer && helpers.findVisible("[contenteditable='true'][aria-label], textarea", composer);
       if (!button || !composer || !submit || !field) return null;
       // Sharing keeps the dialog open on a confirmation screen; the caption
@@ -97,7 +140,8 @@
       const fileInput = () => helpers.findVisible("[role='dialog']") && helpers.queryAllDeep("[role='dialog'] input[type='file']").find(input => !input.disabled) || null;
       let input = fileInput();
       if (!input) {
-        const launch = document.querySelector("svg[aria-label='New post'], svg[aria-label='Create']")?.closest("a, [role='link'], [role='button'], button")
+        const launch = helpers.findIconControl?.(document, ICONS.create, "a, [role='link'], [role='button'], button")
+          || document.querySelector("svg[aria-label='New post'], svg[aria-label='Create']")?.closest("a, [role='link'], [role='button'], button")
           || helpers.findClickable("create", document, element => !element.closest("[role='dialog']"), false);
         if (!launch) return helpers.manualResult("Open Instagram’s Create dialog, then use the Crossposter sidebar.");
         launch.click();
@@ -125,7 +169,7 @@
           advance = await helpers.waitForElement(() => {
             const root = dialog();
             if (!root) return null;
-            return captionField() ? root : (helpers.findClickable("next", root) || helpers.findClickable("ok", root));
+            return captionField() ? root : (headerAction(root, helpers) || helpers.findClickable("next", root) || helpers.findClickable("ok", root));
           }, 15000);
         } catch { break; }
         if (!advance || captionField()) break;
@@ -216,7 +260,7 @@
       const label = `${image.alt || ""} ${image.getAttribute?.("aria-label") || ""}`;
       const width = Number(image.naturalWidth || image.width || 0);
       const height = Number(image.naturalHeight || image.height || 0);
-      return /^https?:/i.test(source) && width >= 180 && height >= 100 && !/(?:profile picture|avatar|emoji|icon)/i.test(label);
+      return /^https?:/i.test(source) && width >= 180 && height >= 100 && !AVATAR_ALT.test(label);
     });
   }
 })();

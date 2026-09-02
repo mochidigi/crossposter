@@ -38,11 +38,13 @@
     async openComposer({ handoff, files, helpers }) {
       if (!location.hostname.endsWith("upscrolled.com")) throw new Error("This handoff only runs on UpScrolled.");
       const findCaption = () => {
-        const dialog = [...document.querySelectorAll("[role='dialog'], dialog")].find(helpers.isVisible);
-        if (!dialog) return null;
-        return [...dialog.querySelectorAll("textarea, input[type='text'], [contenteditable='true'], [role='textbox']")]
-          .find(element => helpers.isVisible(element) && /caption|what.*mind|write|share/i.test(`${element.getAttribute("placeholder") || ""} ${element.getAttribute("aria-label") || ""}`))
-          || [...dialog.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")].find(helpers.isVisible) || null;
+        for (const dialog of [...document.querySelectorAll("[role='dialog'], dialog")].filter(helpers.isVisible)) {
+          const field = [...dialog.querySelectorAll("textarea, input[type='text'], [contenteditable='true'], [role='textbox']")]
+            .find(element => helpers.isVisible(element) && /caption|what.*mind|write|share/i.test(`${element.getAttribute("placeholder") || ""} ${element.getAttribute("aria-label") || ""}`))
+            || [...dialog.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")].find(helpers.isVisible);
+          if (field) return field;
+        }
+        return null;
       };
       const findLauncher = () => helpers.findClickable("Post", document, element => !element.closest("[role='dialog'], dialog"));
       let caption = findCaption(), textInserted = false, mediaInserted = 0, error = "";
@@ -65,15 +67,57 @@
           // The upload input mounts after the dialog's caption field, so wait
           // for it instead of attaching into a not-yet-rendered form.
           const root = caption.closest("[role='dialog'], dialog") || document;
-          await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, false), 15000).catch(() => null);
-          mediaInserted = helpers.attachNativeFiles(files, root);
-          // A change event only proves the file reached the input. Count the
-          // attachment once UpScrolled shows the preview (or its "Choose
-          // cover" step for video), so a rejected upload triggers the
-          // background's retry instead of a false success.
-          if (mediaInserted) {
-            const preview = await helpers.waitForElement(() => findMediaPreview(files, helpers), PREVIEW_WAIT_MS).catch(() => null);
-            if (!preview) { mediaInserted = 0; error = "UpScrolled did not show the attached media."; }
+          let preview = findAttachedMediaPreview(files, helpers, root);
+          let cover = findCoverDialog(files, helpers);
+          // A retry can arrive while UpScrolled's mandatory cover picker is
+          // still sitting above an already accepted video. Do not assign the
+          // file again: that removes the accepted item and restarts the flow.
+          if (!preview && !cover) {
+            await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, false), 15000).catch(() => null);
+            mediaInserted = helpers.attachNativeFiles(files, root);
+            if (mediaInserted) {
+              if (files.some(file => file.type.startsWith("video/"))) {
+                // UpScrolled renders its ordinary video preview one React
+                // commit before opening the cover picker. Waiting on either
+                // element can therefore return just before the picker mounts.
+                // A freshly attached video must wait for that next step.
+                cover = await helpers.waitForElement(
+                  () => findCoverDialog(files, helpers),
+                  PREVIEW_WAIT_MS
+                ).catch(() => null);
+                preview = findAttachedMediaPreview(files, helpers, root);
+                if (!cover && !preview) mediaInserted = 0;
+              } else {
+                preview = await helpers.waitForElement(
+                  () => findAttachedMediaPreview(files, helpers, root),
+                  PREVIEW_WAIT_MS
+                ).catch(() => null);
+                if (!preview) mediaInserted = 0;
+              }
+            }
+          } else mediaInserted = files.length;
+
+          // UpScrolled opens a cover picker as soon as a video is accepted.
+          // Cancel only skips cover customization (it does not remove the
+          // video), and the user can still choose a cover from the attached
+          // video's controls before posting. Close this intermediate step so
+          // the handoff lands on the reviewable, attached composer.
+          if (mediaInserted && cover) {
+            // This lookup is exact and scoped to the cover dialog. Never use
+            // its Done button or the parent composer's Post button.
+            const cancel = await helpers.waitForElement(
+              () => helpers.findClickable("Cancel", cover),
+              COVER_ACTION_WAIT_MS
+            ).catch(() => null);
+            cancel?.click();
+            preview = await helpers.waitForElement(
+              () => !findCoverDialog(files, helpers) && findAttachedMediaPreview(files, helpers, root),
+              PREVIEW_WAIT_MS
+            ).catch(() => null);
+            if (!preview) mediaInserted = 0;
+          }
+          if (!mediaInserted) {
+            error = "UpScrolled did not show the attached media.";
           }
         }
       } catch (caught) {
@@ -86,15 +130,21 @@
   const LAUNCHER_WAIT_MS = 15000;
   const CHOICE_WAIT_MS = 10000;
   const PREVIEW_WAIT_MS = 20000;
+  const COVER_ACTION_WAIT_MS = 5000;
 
-  function findMediaPreview(files, helpers) {
+  function findCoverDialog(files, helpers) {
+    if (!files.some(file => file.type.startsWith("video/"))) return null;
+    const heading = helpers.queryAllDeep("h1, h2, h3, [role='heading']")
+      .find(element => helpers.isVisible(element) && helpers.normalizeText(element) === "choose cover");
+    return heading ? helpers.closestDeep(heading, "[role='dialog'], dialog") : null;
+  }
+
+  function findAttachedMediaPreview(files, helpers, root) {
     const wantsVideo = files.some(file => file.type.startsWith("video/"));
     if (wantsVideo) {
-      return helpers.findDialogWithText("Choose cover")
-        || helpers.queryAllDeep("[role='dialog'] video, dialog video").find(helpers.isVisible)
-        || null;
+      return helpers.queryAllDeep("video", root).find(helpers.isVisible) || null;
     }
-    return helpers.queryAllDeep("[role='dialog'] img, dialog img")
+    return helpers.queryAllDeep("img", root)
       .find(image => helpers.isVisible(image) && /^(?:blob|data):/i.test(image.currentSrc || image.src || "")) || null;
   }
 

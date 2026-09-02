@@ -25,13 +25,15 @@
     prepareCapture: ({ post, helpers }) => expandLinkedInText(post, helpers),
     inlineActionText: "Crosspost",
     inlineActionMount: ({ post, helpers }) => {
+      // LinkedIn localizes the action labels ("Kommentera", "Skicka", …) but
+      // keeps stable SVG symbol ids on the icons, so match those first.
       const actions = helpers.queryAllDeep("button, a", post);
-      const comment = actions.find(element => helpers.normalizeText(element).toLowerCase() === "comment");
-      const repost = actions.find(element => helpers.normalizeText(element).toLowerCase() === "repost");
-      const send = actions.find(element => helpers.normalizeText(element).toLowerCase() === "send");
+      const comment = findAction(actions, ACTION_ICONS.comment, helpers);
+      const repost = findAction(actions, ACTION_ICONS.repost, helpers);
+      const send = findAction(actions, ACTION_ICONS.send, helpers);
       const container = send?.parentElement;
       return container && comment?.parentElement === container && repost?.parentElement === container
-        ? { container, template: send, templateLabel: "Send" }
+        ? { container, template: send, templateLabel: helpers.normalizeText(send) || "Send" }
         : null;
     },
     ownsPage: ({ helpers }) => linkedInOwnsPage(helpers),
@@ -66,7 +68,8 @@
         const composer = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
         let input = helpers.findCompatibleFileInput(files, document, true);
         if (!input) {
-          const addMedia = helpers.findClickable("Add media", composer);
+          const addMedia = helpers.findIconControl?.(composer, ACTION_ICONS.addMedia, "button")
+            || helpers.findClickable("Add media", composer);
           if (addMedia) {
             addMedia.click();
             try { input = await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, document, true), 20000); }
@@ -101,13 +104,38 @@
   };
   core.register(adapter);
 
+  // Stable, language-independent hooks: LinkedIn's icon sprites keep the same
+  // symbol id (svg#comment-small / <use href="#comment-small">) whatever the
+  // UI language. Labels are a last-resort fallback for older markup.
+  const ACTION_ICONS = Object.freeze({
+    comment: { ids: ["comment-small", "comment-medium"], labels: ["comment"] },
+    repost: { ids: ["repost-small", "repost-medium"], labels: ["repost"] },
+    send: { ids: ["send-privately-small", "send-privately-medium"], labels: ["send"] },
+    addMedia: { ids: ["image-medium", "image-small"], labels: ["add media"] }
+  });
+
+  function findAction(actions, icon, helpers) {
+    return actions.find(element => helpers.iconMatches?.(element, { ids: icon.ids }))
+      || actions.find(element => icon.labels.includes(helpers.normalizeText(element).toLowerCase()))
+      || null;
+  }
+
   function composerAutoOpens() {
     return /[?&]shareActive=true(?:&|$)/i.test(location.search || "");
   }
 
   function findStartPostLauncher(helpers) {
+    const usable = element => Boolean(element) && helpers.isVisible(element) && !helpers.closestDeep(element, "[role='dialog']");
+    // Current feed: the share box pairs the viewer's avatar (a stable id) with
+    // the launcher; legacy feed: a dedicated trigger class. Neither depends on
+    // the localized "Start a post" label, which stays as the final fallback.
+    const structural = helpers.queryAllDeep("#shareboxProfilePictureComponentRef")
+      .map(avatar => avatar.parentElement?.querySelector?.("[role='button'], button"))
+      .find(usable)
+      || helpers.queryAllDeep(".share-box-feed-entry__trigger").find(usable);
+    if (structural) return structural;
     return helpers.queryAllDeep("button, [role='button']")
-      .find(element => helpers.isVisible(element) && !helpers.closestDeep(element, "[role='dialog']") && helpers.normalizeText(element).startsWith("start a post")) || null;
+      .find(element => usable(element) && helpers.normalizeText(element).startsWith("start a post")) || null;
   }
 
   function isTopFrame() {
@@ -242,7 +270,10 @@
   function linkedInIsOwnPost({ post, helpers }) {
     const profilePattern = /\/in\/([^/?#]+)/i;
     const authoredLink = helpers.queryAllDeep("a[href*='/in/']", post)[0];
-    const signedInLink = helpers.queryAllDeep("[aria-label='Sidebar'] a[href*='/in/'], .global-nav__me a[href*='/in/'], a[aria-label*='profile' i][href*='/in/']")[0];
+    const signedInLink = helpers.queryAllDeep("[aria-label='Sidebar'] a[href*='/in/'], .global-nav__me a[href*='/in/'], a[aria-label*='profile' i][href*='/in/']")[0]
+      // The feed's left rail starts with the viewer's own profile card; its
+      // landmark label is localized, so fall back to the first aside there.
+      || (/^\/feed(?:\/|$)/.test(location.pathname || "") ? helpers.queryAllDeep("main aside a[href*='/in/']")[0] : null);
     const authoredBy = helpers.identityFromHref(authoredLink?.getAttribute("href"), profilePattern);
     const signedInAs = helpers.identityFromHref(signedInLink?.getAttribute("href"), profilePattern);
     return Boolean(authoredBy && signedInAs && authoredBy === signedInAs);
@@ -252,8 +283,11 @@
     const textElement = linkedInTextElement(post, helpers);
     if (!textElement) return "";
     const collapsed = helpers.queryAllDeep("[data-testid='expandable-text-button']", textElement).length > 0;
-    const text = textElement.innerText || textElement.textContent || "";
-    return (collapsed ? text.replace(/\s*(?:…|\.\.\.)\s*more\s*$/iu, "") : text).trim();
+    // Drop the "… more" expander by element rather than by its localized label.
+    const text = typeof helpers.textWithout === "function" && typeof textElement.cloneNode === "function"
+      ? helpers.textWithout(textElement, "[data-testid='expandable-text-button']")
+      : textElement.innerText || textElement.textContent || "";
+    return (collapsed ? text.replace(/\s*(?:…|\.\.\.)\s*more\s*$/iu, "").replace(/\s*(?:…|\.\.\.)\s*$/u, "") : text).trim();
   }
 
   function linkedInTextElement(post, helpers) {
@@ -290,8 +324,12 @@
 
   function linkedInPosts(helpers) {
     const legacy = adapter.postSelectors.slice(0, 3).flatMap(selector => helpers.queryAllDeep(selector));
-    const current = helpers.queryAllDeep("h2").filter(heading => helpers.normalizeText(heading) === "feed post")
-      .map(heading => helpers.closestDeep(heading, "[role='listitem']") || heading.parentElement);
+    // Each current feed item starts with a screen-reader heading whose text is
+    // localized; recognise it by the action bar it introduces instead.
+    const current = helpers.queryAllDeep("h2")
+      .map(heading => helpers.closestDeep(heading, "[role='listitem']") || heading.parentElement)
+      .filter(item => item && (helpers.normalizeText(item.querySelector?.("h2")) === "feed post"
+        || helpers.queryAllDeep("button, a", item).some(element => helpers.iconMatches?.(element, { ids: ACTION_ICONS.send.ids }))));
     return [...new Set([...legacy, ...current])].filter(post => helpers.isVisible(post));
   }
 
@@ -330,7 +368,13 @@
     if (!inserted) return 0;
     let next;
     try {
-      next = await helpers.waitForElement(() => helpers.findClickable("Next", document, element => Boolean(helpers.closestDeep(element, "[role='dialog'], dialog"))), 30000);
+      // The media editor's footer keeps a stable primary-button class; the
+      // "Next" label is localized, so it is only the fallback.
+      const inDialog = element => Boolean(helpers.closestDeep(element, "[role='dialog'], dialog"));
+      const findNext = () => helpers.queryAllDeep?.(".share-box-footer__primary-btn")
+        ?.find(element => helpers.isVisible(element) && !element.disabled && inDialog(element))
+        || helpers.findClickable("Next", document, inDialog);
+      next = await helpers.waitForElement(findNext, 30000);
     } catch { return 0; }
     next.click();
     try {

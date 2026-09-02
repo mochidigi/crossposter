@@ -378,6 +378,53 @@
       .find(element => isVisible(element) && normalizeText(element).includes(String(text).toLowerCase())) || null;
   }
 
+  // Language-neutral control lookup. Social sites localize aria-labels,
+  // SVG <title>s, and button text with the account or browser language, so
+  // prefer stable hooks: SVG symbol ids, icon path geometry, then labels.
+  function svgOf(element) {
+    if (!element) return null;
+    if (String(element.tagName).toLowerCase() === "svg") return element;
+    return element.querySelector?.("svg") || null;
+  }
+
+  function iconMatches(element, icon = {}) {
+    const svg = svgOf(element);
+    if (!svg) return false;
+    const ids = icon.ids || [];
+    if (ids.length) {
+      if (ids.includes(svg.id)) return true;
+      const uses = [...svg.querySelectorAll("use")].map(use => (use.getAttribute("href") || use.getAttribute("xlink:href") || "").replace(/^#/, ""));
+      if (uses.some(id => ids.includes(id))) return true;
+    }
+    const prefixes = icon.paths || [];
+    if (prefixes.length) {
+      const paths = [...svg.querySelectorAll("path")].map(path => (path.getAttribute("d") || "").replace(/\s+/g, " ").trim());
+      if (paths.some(d => prefixes.some(prefix => d.startsWith(prefix)))) return true;
+    }
+    const labels = icon.labels || [];
+    if (!labels.length) return false;
+    const label = [svg.getAttribute("aria-label"), svg.querySelector("title")?.textContent, element.getAttribute?.("aria-label")]
+      .map(value => String(value || "").trim().toLowerCase()).filter(Boolean);
+    return labels.some(text => label.includes(String(text).toLowerCase()));
+  }
+
+  function iconControls(root = document, selector = "button, [role='button'], a") {
+    return queryAllDeep(selector, root).filter(element => svgOf(element));
+  }
+
+  function findIconControl(root, icon, selector = "button, [role='button'], a") {
+    return queryAllDeep(selector, root).find(element => iconMatches(element, icon)) || null;
+  }
+
+  // Visible text of an element with the matching descendants (e.g. "… more"
+  // expanders whose label changes per language) removed first.
+  function textWithout(element, selector) {
+    if (!element) return "";
+    const clone = element.cloneNode(true);
+    if (selector) clone.querySelectorAll?.(selector).forEach(node => node.remove());
+    return String(clone.innerText ?? clone.textContent ?? "").trim();
+  }
+
   function findClickable(text, root = document, filter = () => true, exact = true) {
     const wanted = text.toLowerCase();
     return queryAllDeep("button, [role='button'], a", root).find(element => {
@@ -633,6 +680,7 @@
   const helpers = Object.freeze({
     mediaFromNodes, identityFromHref, firstText, capturePost: capture,
     manualResult, queryAllDeep, closestDeep, findVisible, normalizeText, isVisible, findDialogWithText, findClickable, waitForElement,
+    svgOf, iconMatches, iconControls, findIconControl, textWithout,
     setComposerText, pasteComposerText, composerHasText,
     attachNativeFiles, fillNativeComposer, findCompatibleFileInput, attachFilesToInput
   });

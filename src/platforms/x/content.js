@@ -10,12 +10,21 @@
       const group = trigger?.closest?.("div[role='group']");
       const post = trigger?.closest?.("article, [data-testid='tweet']");
       if (!post || !group?.querySelector("[data-testid='reply']") || !group.querySelector("[data-testid='like'], [data-testid='unlike']")) return null;
+      // The repost trigger also opens a menu from this group; the share
+      // trigger is the group's last menu button in every UI language.
+      const menuTriggers = [...group.querySelectorAll("button[aria-haspopup='menu']")];
+      if (menuTriggers.length && menuTriggers.at(-1) !== trigger) return null;
       return { post, trigger };
     },
-    nativeMenuActionMount: ({ menu, helpers }) => {
+    nativeMenuActionMount: ({ menu, context, helpers }) => {
       const container = menu.querySelector("[data-testid='Dropdown']");
       const items = [...(container?.querySelectorAll(":scope > [role='menuitem']") || [])];
-      if (!items.some(item => helpers.normalizeText(item).toLowerCase() === "copy link")) return null;
+      if (items.length < 2) return null;
+      // The menu belongs to the share trigger we recorded while it is the one
+      // currently expanded; the "Copy link" label is a fallback for markup
+      // that omits aria-expanded (labels are localized, e.g. "Kopiera länk").
+      const ownMenu = context?.trigger?.getAttribute?.("aria-expanded") === "true";
+      if (!ownMenu && !items.some(item => helpers.normalizeText(item).toLowerCase() === "copy link")) return null;
       return { container, template: items.at(-1) };
     },
     captureText: ({ post }) => post.querySelector("[data-testid='tweetText']")?.innerText?.trim() || "",

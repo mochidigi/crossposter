@@ -23,6 +23,28 @@
         : "";
     } catch { return ""; }
   };
+  // Threads localizes every aria-label and SVG <title> ("Dela", "Gilla", …)
+  // with the account language. Icon geometry and layout stay the same, so the
+  // structural checks come first and English labels are only a fallback.
+  const ICONS = Object.freeze({
+    share: { paths: ["M7.2474 1.49853"], labels: ["share"] },
+    profile: { paths: ["M12 0.75C8.82431"], labels: ["profile"] },
+    create: { paths: ["M13.25 3.00001"], labels: ["create", "new thread"] }
+  });
+  const hasIcon = element => Boolean(element?.querySelector?.("svg"));
+  const directChildren = element => [...(element?.querySelectorAll?.(":scope > *") || [])];
+  // The action bar is a row of at least four cells, each wrapping one icon
+  // button (like, comment, repost, share).
+  const actionRowFor = button => {
+    const row = button?.parentElement?.parentElement;
+    const cells = directChildren(row);
+    return row && cells.length >= 4 && cells.every(cell => hasIcon(cell.querySelector?.("[role='button']") || cell)) ? row : null;
+  };
+  function threadsActionRow(post, helpers) {
+    const buttons = [...post.querySelectorAll("[role='button']")].filter(hasIcon);
+    const share = buttons.find(button => helpers?.iconMatches?.(button, ICONS.share));
+    return (share && actionRowFor(share)) || buttons.map(actionRowFor).find(Boolean) || null;
+  }
   const externalUrl = (href = "") => {
     const youtube = youtubeVideoUrl(href);
     if (youtube) return youtube;
@@ -32,17 +54,44 @@
     } catch { return ""; }
   };
 
+  // The composer's editable is a contenteditable textbox whose aria-label
+  // ("Compose new thread…") is localized. Threads no longer wraps the composer
+  // in a role=dialog: it renders in a popover (a role=menu ancestor), so the
+  // composer root is the nearest ancestor that holds the heading, the media
+  // file input, and the footer buttons.
+  const COMPOSER_FIELD = "[contenteditable='true'][role='textbox']";
+  function composerRoot(element, helpers) {
+    const dialog = helpers.closestDeep(element, "[role='dialog'], dialog");
+    if (dialog) return dialog;
+    let current = element?.parentElement || null;
+    while (current && current !== document.body) {
+      if (current.querySelector?.("[data-pressable-container]")) return null;
+      if (current.querySelector?.("input[type='file']") && current.querySelector?.("h1, h2, h3, [role='heading']")
+        && helpers.queryAllDeep("button, [role='button']", current).some(button => !hasIcon(button) && helpers.normalizeText(button))) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+  // The submit control is the dialog's text-only button (the reply-audience
+  // dropdown and toolbar buttons all carry icons).
+  function submitButton(composer, helpers) {
+    const candidates = helpers.queryAllDeep("button, [role='button']", composer).filter(element =>
+      helpers.isVisible(element) && !hasIcon(element) && helpers.normalizeText(element)
+      && !element.getAttribute?.("aria-haspopup") && !element.closest?.(COMPOSER_FIELD));
+    return candidates.find(element => helpers.normalizeText(element) === "post") || candidates.at(-1) || null;
+  }
+
   core.register({
     id: "threads",
     matches: isThreadsHost,
     // Threads does not currently expose feed items as articles. This stable
     // pressable container wraps the author, permalink, body, media, and actions.
     postSelectors: ["[data-pressable-container='true']"],
-    inlineActionMount: ({ post }) => {
+    inlineActionMount: ({ post, helpers }) => {
       if (!postLink(post)) return null;
-      const share = [...post.querySelectorAll("[role='button']")].find(button => button.querySelector("svg[aria-label='Share']"));
-      const row = share?.parentElement?.parentElement;
-      return row && row.querySelectorAll(":scope > *").length >= 4 ? row : null;
+      return threadsActionRow(post, helpers);
     },
     captureText: ({ post }) => {
       const permalink = postLink(post);
@@ -93,30 +142,39 @@
     sourceAuthor: ({ post }) => (profileLink(post)?.innerText || profileLink(post)?.textContent || "").replace(/^@/, "").trim(),
     isOwnPost: ({ post, helpers }) => {
       const authoredBy = helpers.identityFromHref(profileLink(post)?.getAttribute("href"));
-      const signedInProfile = [...document.querySelectorAll("a[href^='/@']")].find(link => {
-        const label = `${link.getAttribute("aria-label") || ""} ${link.innerText || ""}`.replace(/\s+/g, " ").trim();
-        return /^profile(?:\s+profile)?$/i.test(label) || Boolean(link.querySelector("img[alt='Profile'], svg[aria-label='Profile']"));
-      });
+      // The navigation's profile entry is an icon-only link to the viewer's
+      // own handle; feed links to /@handle carry text or an avatar instead.
+      const navLinks = [...document.querySelectorAll("a[href^='/@']")].filter(link => !link.closest?.("[data-pressable-container]"));
+      const signedInProfile = navLinks.find(link => helpers.iconMatches?.(link, ICONS.profile))
+        || navLinks.find(link => hasIcon(link) && !String(link.innerText || "").trim())
+        || navLinks.find(link => {
+          const label = `${link.getAttribute("aria-label") || ""} ${link.innerText || ""}`.replace(/\s+/g, " ").trim();
+          return /^profile(?:\s+profile)?$/i.test(label) || Boolean(link.querySelector("img[alt='Profile'], svg[aria-label='Profile']"));
+        });
       const signedInAs = helpers.identityFromHref(signedInProfile?.getAttribute("href"));
       return Boolean(authoredBy && signedInAs && authoredBy === signedInAs);
     },
     nativePostSubmission: ({ target, helpers }) => {
       const button = helpers.closestDeep(target, "button, [role='button']");
-      const composer = helpers.closestDeep(button, "[role='dialog'], dialog");
-      const field = composer && helpers.findVisible("[contenteditable='true'][role='textbox'][aria-label*='compose' i], [contenteditable='true'][role='textbox'][aria-label*='text field' i]", composer);
-      if (!button || !composer || !field || helpers.normalizeText(button) !== "post" || button.getAttribute("aria-disabled") === "true") return null;
+      const composer = button && composerRoot(button, helpers);
+      const field = composer && helpers.findVisible(COMPOSER_FIELD, composer);
+      if (!button || !composer || !field || button.getAttribute("aria-disabled") === "true") return null;
+      if (button !== submitButton(composer, helpers) && helpers.normalizeText(button) !== "post") return null;
       return { isOpen: () => composer.isConnected && helpers.isVisible(composer) };
     },
     async openComposer({ handoff, files, helpers }) {
       if (!isThreadsHost(location.hostname)) throw new Error("Open Threads in this tab, then use the Crossposter sidebar.");
-      const selector = "[role='dialog'] [contenteditable='true'][role='textbox'][aria-label*='compose' i], [role='dialog'] [contenteditable='true'][role='textbox'][aria-label*='text field' i]";
-      let field = helpers.findVisible(selector);
+      const selector = COMPOSER_FIELD;
+      const findField = () => helpers.queryAllDeep(selector).find(element => helpers.isVisible(element) && composerRoot(element, helpers)) || null;
+      let field = findField();
       if (!field) {
-        const launch = helpers.findClickable("New thread", document, element => !element.closest("[role='dialog'], dialog"))
+        const outsideDialog = element => !element.closest("[role='dialog'], dialog");
+        const launch = helpers.findIconControl?.(document, ICONS.create, "[role='button'], a")
+          || helpers.findClickable("New thread", document, outsideDialog)
           || helpers.findVisible("[role='button'][aria-label^='Empty text field']");
         if (!launch) return helpers.manualResult("Open Threads’ New thread composer, then use the Crossposter sidebar.");
         launch.click();
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), 20000); }
+        try { field = await helpers.waitForElement(findField, 20000); }
         catch { return helpers.manualResult("Open Threads’ New thread composer, then use the Crossposter sidebar."); }
       }
       // Threads can accept a synthetic paste before its contenteditable text
@@ -129,7 +187,7 @@
       );
       let mediaInserted = 0;
       if (files.length) {
-        const root = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
+        const root = composerRoot(field, helpers) || document;
         try { await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, false), 15000); } catch {}
         mediaInserted = helpers.attachNativeFiles(files, root);
       }
