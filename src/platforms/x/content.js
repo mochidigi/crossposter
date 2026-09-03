@@ -71,7 +71,12 @@
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector), 20000); }
         catch { return helpers.manualResult("Open X’s post composer, then use the Crossposter sidebar."); }
       }
-      const textInserted = helpers.setComposerText(field, handoff.text || "");
+      // X's composer is Draft.js. execCommand("insertText") mutates the DOM
+      // and leaves Draft to reconcile the leaf under the caret with its model;
+      // once its link decorator splits the text into several leaves that
+      // reconcile truncates or repeats fragments ("t3.gg on X)t3.gg on X)").
+      // A plain-text paste goes through Draft's own model instead.
+      const textInserted = await helpers.pasteComposerText(field, handoff.text || "");
       if (!files.length) return { ok: true, composerOpened: true, textInserted, mediaInserted: 0, error: "" };
       const root = field.closest("[role='dialog'], dialog") || document;
       let mediaInserted = 0;

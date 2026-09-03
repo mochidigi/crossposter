@@ -43,6 +43,24 @@ one permission bundle. Source capture, media resolution, and destination
 handoff stop until the complete bundle is granted; enabling a platform in
 Settings requests the same complete bundle.
 
+Firefox treats every MV3 host permission as optional: users can turn any of
+them off under the add-on's **Permissions** tab, temporary installs and some
+profiles start without them, and hosts added by an update are never granted
+automatically. The background therefore checks the complete set after
+installation, updates, and browser start; when anything is missing it opens
+`welcome.html`, whose **Allow site access** button requests the whole set in
+one browser prompt. The popup shows the same call to action, and granting
+access re-registers and re-injects the platform content scripts without a
+reload. Chrome grants `host_permissions` at install, so the page only appears
+there if access was later revoked.
+
+Invoking Crossposter on a post whose platform is not fully allowed never opens
+the composer directly. The context-menu click first calls
+`permissions.request` for that platform inside the click gesture (a silent
+no-op when access is complete); if access is still missing, including from the
+inline button, the capture is parked and the site-access page opens with a
+"continue" mode that resumes the crosspost as soon as access is granted.
+
 ## Review conclusions
 
 - Nothing requested is unused; removing any entry breaks a shipped feature.

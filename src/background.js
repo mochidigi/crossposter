@@ -5,7 +5,7 @@ import { nativeDestination } from "./shared/destinations.js";
 import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { clearHandoffMedia, readHandoffMediaChunk } from "./shared/media-store.js";
-import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, registeredPlatformContentScripts } from "./shared/content-scripts.js";
+import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, platformOriginsForIds, registeredPlatformContentScripts } from "./shared/content-scripts.js";
 import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, inlineActionsEnabled, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY } from "./shared/preferences.js";
 import { linkedInPublishCandidate } from "./shared/linkedin-monitor.js";
 import { linkedInDashManifestRequest, linkedInDashPlaylist, linkedInVhsPlaylist, linkedInVideoRequest, selectLinkedInVideoRequest } from "./platforms/linkedin/network.js";
@@ -13,7 +13,7 @@ import { DETECTED_DRAFTS_KEY, detectedBadgeText, enqueueDetectedDraft, removeDet
 import { CROSSPOST_SESSIONS_KEY, crosspostComposerUrl, recordPostedDestination, resetCrosspostHandoff, sessionForTab, sessionPreview, sessionTabIds } from "./shared/crosspost-sessions.js";
 import { markVideoResolving, settleVideoResolution } from "./shared/video-resolution-state.js";
 import { resolvePageVideoHint } from "./shared/source-video.js";
-import { incompletePlatformPermissions } from "./shared/platform-permissions.js";
+import { allPlatformIds, incompletePlatformPermissions, missingSitePlatforms, SITE_ACCESS_DISMISSED_KEY, SITE_ACCESS_PAGE } from "./shared/platform-permissions.js";
 
 const MENU_ID = "crosspost-studio";
 let trayWindowId = null;
@@ -88,7 +88,7 @@ if (ext.webRequest?.onBeforeRequest) {
   }, videoFilter);
 }
 
-ext.runtime.onInstalled.addListener(async () => {
+ext.runtime.onInstalled.addListener(async details => {
   await ext.contextMenus.removeAll();
   await ext.contextMenus.create({
     id: MENU_ID,
@@ -96,13 +96,63 @@ ext.runtime.onInstalled.addListener(async () => {
     contexts: ["page", "selection", "link", "image", "video"],
     documentUrlPatterns: platformDocumentUrlPatterns()
   });
-  const enabled = await synchronizePlatformContentScripts();
+  const enabled = await synchronizePlatformContentScripts().catch(error => {
+    console.warn("Crossposter content-script registration failed:", error);
+    return [];
+  });
   await reinjectOpenPlatformTabs(enabled);
+  // A fresh install or update is a new chance to ask: forget an earlier "not now".
+  if (details?.reason === "install" || details?.reason === "update") await ext.storage.local.remove(SITE_ACCESS_DISMISSED_KEY).catch(() => {});
+  await promptForMissingSiteAccess();
 });
 ext.runtime.onStartup?.addListener(async () => {
-  const enabled = await synchronizePlatformContentScripts();
+  const enabled = await synchronizePlatformContentScripts().catch(error => {
+    console.warn("Crossposter content-script registration failed:", error);
+    return [];
+  });
+  await reinjectOpenPlatformTabs(enabled);
+  await promptForMissingSiteAccess();
+});
+// Host access granted later (welcome page, popup, compose, or about:addons)
+// must bring already-open platform tabs back to life without a reload.
+ext.permissions?.onAdded?.addListener(async () => {
+  const enabled = await synchronizePlatformContentScripts().catch(() => []);
   await reinjectOpenPlatformTabs(enabled);
 });
+
+async function siteAccessPageTab() {
+  const url = ext.runtime.getURL(SITE_ACCESS_PAGE);
+  const tabs = await ext.tabs.query({}).catch(() => []);
+  return tabs.find(tab => typeof tab.url === "string" && tab.url.startsWith(url)) || null;
+}
+
+async function openSiteAccessPage({ focus = true } = {}) {
+  const existing = await siteAccessPageTab();
+  if (existing && Number.isInteger(existing.id)) {
+    if (focus) {
+      await ext.tabs.update(existing.id, { active: true }).catch(() => {});
+      if (Number.isInteger(existing.windowId)) await ext.windows?.update?.(existing.windowId, { focused: true }).catch(() => {});
+    }
+    return existing;
+  }
+  return ext.tabs.create({ url: ext.runtime.getURL(SITE_ACCESS_PAGE), active: focus });
+}
+
+// Firefox MV3 treats host permissions as optional and never grants hosts
+// added by an update, so the extension asks for the complete set itself
+// right after installation instead of failing silently on the first post.
+async function promptForMissingSiteAccess() {
+  try {
+    if (!ext.permissions?.contains) return;
+    const missing = await missingSitePlatforms(ext.permissions, ext.runtime.getManifest());
+    if (!missing.length) return;
+    const stored = await ext.storage.local.get(SITE_ACCESS_DISMISSED_KEY);
+    if (stored[SITE_ACCESS_DISMISSED_KEY]) return;
+    await openSiteAccessPage();
+  } catch (error) {
+    console.warn("Crossposter site-access prompt failed:", error);
+  }
+}
 
 ext.storage.onChanged?.addListener((changes, areaName) => {
   if (areaName !== "local") return;
@@ -110,8 +160,28 @@ ext.storage.onChanged?.addListener((changes, areaName) => {
   if (changes[SHOW_INLINE_ACTIONS_KEY]) broadcastInlineActionPreference(inlineActionsEnabled(changes[SHOW_INLINE_ACTIONS_KEY].newValue)).catch(() => {});
 });
 
-ext.contextMenus.onClicked.addListener(async (info, tab) => {
+ext.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== MENU_ID) return;
+  // The menu click is a user action, so the browser accepts a permission
+  // request here as long as nothing is awaited first. When the site is already
+  // allowed this resolves silently; otherwise the user sees one prompt on the
+  // page itself instead of a dead composer.
+  const gesture = requestSourceAccessInGesture(platformContentScriptForUrl(tab?.url || tab?.pendingUrl || "")?.platformId);
+  handleCrosspostMenuClick(info, tab, gesture).catch(error => console.warn("Crossposter capture failed:", error));
+});
+
+function requestSourceAccessInGesture(platformId) {
+  if (!platformId || !ext.permissions?.request) return Promise.resolve(null);
+  if (!allPlatformIds(ext.runtime.getManifest()).includes(platformId)) return Promise.resolve(null);
+  try {
+    return Promise.resolve(ext.permissions.request({ origins: platformOriginsForIds([platformId]) })).catch(() => null);
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
+async function handleCrosspostMenuClick(info, tab, gesture) {
+  await gesture;
   let captured = {};
   // LinkedIn can render its feed in a same-origin preload frame. Address the
   // frame that actually received the context-menu click so capture does not
@@ -129,8 +199,8 @@ ext.contextMenus.onClicked.addListener(async (info, tab) => {
     // page URL supplied by the context-menu event.
     sourceUrl: captured.sourceUrl || info.pageUrl || tab.url,
     media
-  }, videoHint, { windowId: tab?.windowId });
-});
+  }, videoHint, { windowId: tab?.windowId, openerTabId: tab?.id });
+}
 
 async function capturedVideoHint(tab, frameId) {
   const platform = platformContentScriptForUrl(tab?.url || tab?.pendingUrl || "");
@@ -305,9 +375,21 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const videoHint = media.some(item => item.kind === "video")
       ? resolvedLinkedInVideoHint(sender.tab?.id, message.videoHint || {}, sender.frameId)
       : null;
-    openCapturedPost({ ...captured, media }, videoHint, { windowId: sender.tab?.windowId })
-      .then(session => sendResponse({ ok: true, sessionId: session.id }))
+    openCapturedPost({ ...captured, media }, videoHint, { windowId: sender.tab?.windowId, openerTabId: sender.tab?.id })
+      .then(session => sendResponse({ ok: true, sessionId: session.id, deferred: session.deferred === true }))
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+  if (message?.type === "RESUME_PENDING_CAPTURE") {
+    resumePendingCapture(String(message.token || ""), sender.tab?.id)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+  if (message?.type === "CANCEL_PENDING_CAPTURE") {
+    cancelPendingCapture(String(message.token || ""))
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: true }));
     return true;
   }
   if (message?.type === "NATIVE_TRAY_CLOSED") {
@@ -315,8 +397,14 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true });
     return;
   }
+  if (message?.type === "OPEN_SITE_ACCESS_PAGE") {
+    openSiteAccessPage()
+      .then(tab => sendResponse({ ok: true, tabId: tab?.id }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
   if (message?.type === "OPEN_CROSSPOST_COMPOSER") {
-    openCrosspostComposer(createDraft(message.draft || {}), { fresh: message.fresh === true, showOnboarding: message.showOnboarding === true, showSettings: message.showSettings === true, windowId: sender.tab?.windowId })
+    openCrosspostComposer(createDraft(message.draft || {}), { fresh: message.fresh === true, showOnboarding: message.showOnboarding === true, showSettings: message.showSettings === true, windowId: sender.tab?.windowId, openerTabId: sender.tab?.id })
       .then(session => sendResponse({ ok: true, sessionId: session.id, tabId: session.sourceTabId, tabGroupId: session.groupId }))
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
@@ -560,8 +648,72 @@ function pruneLinkedInCandidates() {
   for (const [requestId, candidate] of pendingLinkedInPublishes) if (candidate.detectedAt < cutoff) pendingLinkedInPublishes.delete(requestId);
 }
 
+const PENDING_CAPTURES_KEY = "crossposterPendingCaptures";
+
+async function readPendingCaptures() {
+  const stored = await nativeSessionStorage.get(PENDING_CAPTURES_KEY);
+  return stored[PENDING_CAPTURES_KEY] && typeof stored[PENDING_CAPTURES_KEY] === "object" ? stored[PENDING_CAPTURES_KEY] : {};
+}
+
+async function writePendingCaptures(pending) {
+  await nativeSessionStorage.set({ [PENDING_CAPTURES_KEY]: pending });
+}
+
+function sourceAccessPlatform(draft) {
+  return allPlatformIds(ext.runtime.getManifest()).includes(draft?.sourceNetwork) ? draft.sourceNetwork : null;
+}
+
+// Park the capture and let the site-access page ask for the source platform's
+// hosts before the composer exists, so it never opens with media it cannot
+// resolve. The page resumes the capture once access is granted.
+async function deferCaptureForSiteAccess(captured, videoHint, options, platformId) {
+  const token = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const pending = await readPendingCaptures();
+  const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+  for (const [key, entry] of Object.entries(pending)) if (!entry || entry.createdAt < cutoff) delete pending[key];
+  pending[token] = {
+    captured,
+    videoHint: await Promise.resolve(videoHint).catch(() => null),
+    windowId: Number.isInteger(options.windowId) ? options.windowId : null,
+    openerTabId: Number.isInteger(options.openerTabId) ? options.openerTabId : null,
+    platformId,
+    createdAt: Date.now()
+  };
+  await writePendingCaptures(pending);
+  const url = `${ext.runtime.getURL(SITE_ACCESS_PAGE)}?resume=${encodeURIComponent(token)}&platform=${encodeURIComponent(platformId)}`;
+  const tab = await ext.tabs.create({ url, active: true, ...(Number.isInteger(options.windowId) ? { windowId: options.windowId } : {}) });
+  return { id: null, deferred: true, token, tabId: tab.id };
+}
+
+async function resumePendingCapture(token, senderTabId) {
+  const pending = await readPendingCaptures();
+  const entry = pending[token];
+  if (!entry) throw new Error("This crosspost is no longer waiting. Right-click the post and choose Crosspost again.");
+  const missing = await incompletePlatformPermissions(ext.permissions, [entry.platformId]);
+  if (missing.length) return { ok: false, missing };
+  delete pending[token];
+  await writePendingCaptures(pending);
+  const session = await openCapturedPost(entry.captured, entry.videoHint, { windowId: entry.windowId ?? undefined, openerTabId: entry.openerTabId ?? undefined, skipAccessGate: true });
+  if (Number.isInteger(senderTabId)) ext.tabs.remove(senderTabId).catch(() => {});
+  return { ok: true, sessionId: session.id };
+}
+
+async function cancelPendingCapture(token) {
+  const pending = await readPendingCaptures();
+  if (pending[token]) {
+    delete pending[token];
+    await writePendingCaptures(pending);
+  }
+}
+
 async function openCapturedPost(captured = {}, videoHint, options = {}) {
   const media = Array.isArray(captured.media) ? captured.media : [];
+  if (!options.skipAccessGate) {
+    const platformId = sourceAccessPlatform(createDraft({ ...captured, media }));
+    if (platformId && (await incompletePlatformPermissions(ext.permissions, [platformId])).length) {
+      return deferCaptureForSiteAccess(captured, videoHint, options, platformId);
+    }
+  }
   const hasVideo = media.some(item => item?.kind === "video");
   if (!hasVideo) return openCrosspostComposer(createDraft({ ...captured, media }), options);
 
@@ -632,7 +784,23 @@ async function settleCapturedVideo(sessionId, resolutionId, resolvedItem, error 
   notifyTray();
 }
 
-async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboarding = false, showSettings = false, windowId, pendingVideoResolution = null } = {}) {
+// Place the composer right after the tab Crossposter was invoked on (or the
+// active tab of that window) so its tab group forms beside the source post
+// instead of at the far end of the tab strip.
+async function composerTabPlacement(openerTabId, windowId) {
+  try {
+    const opener = Number.isInteger(openerTabId)
+      ? await ext.tabs.get(openerTabId)
+      : (await ext.tabs.query({ active: true, ...(Number.isInteger(windowId) ? { windowId } : { lastFocusedWindow: true }) }))[0];
+    if (!opener || !Number.isInteger(opener.index)) return {};
+    if (Number.isInteger(windowId) && opener.windowId !== windowId) return {};
+    return { index: opener.index + 1, windowId: opener.windowId };
+  } catch {
+    return {};
+  }
+}
+
+async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboarding = false, showSettings = false, windowId, openerTabId, pendingVideoResolution = null } = {}) {
   await backgroundStateReady.catch(() => {});
   const draft = createDraft(draftInput);
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -654,7 +822,8 @@ async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboa
   await persistCrosspostSessions();
   try {
     const url = crosspostComposerUrl(ext.runtime.getURL("compose.html"), id, fresh, showOnboarding, showSettings);
-    const tab = await ext.tabs.create({ url, active: true, ...(Number.isInteger(windowId) ? { windowId } : {}) });
+    const placement = await composerTabPlacement(openerTabId, windowId);
+    const tab = await ext.tabs.create({ url, active: true, ...(Number.isInteger(windowId) ? { windowId } : {}), ...placement });
     session.windowId = tab.windowId;
     session.sourceTabId = tab.id;
     session.lastActiveTabId = tab.id;

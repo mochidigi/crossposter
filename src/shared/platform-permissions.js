@@ -1,5 +1,38 @@
 import { PLATFORM_PERMISSION_GROUPS, platformOriginsForIds } from "./content-scripts.js";
 
+export const SITE_ACCESS_PAGE = "welcome.html";
+export const SITE_ACCESS_DISMISSED_KEY = "crossposterSiteAccessDismissed";
+
+export function platformLabel(id) {
+  return ({
+    upscrolled: "UpScrolled",
+    linkedin: "LinkedIn",
+    x: "X",
+    bluesky: "Bluesky",
+    instagram: "Instagram",
+    threads: "Threads",
+    facebook: "Facebook",
+    youtube: "YouTube"
+  })[id] || id;
+}
+
+// Platforms whose complete host bundle the running manifest declares. A group
+// present only in one browser's manifest (YouTube is Firefox-only) must not be
+// listed or requested elsewhere: the browser rejects the whole request.
+export function allPlatformIds(manifest = null) {
+  const ids = Object.keys(PLATFORM_PERMISSION_GROUPS);
+  if (!manifest) return ids;
+  const declared = new Set([...(manifest.host_permissions || []), ...(manifest.optional_host_permissions || [])]);
+  return ids.filter(platformId => platformOriginsForIds([platformId]).every(origin => declared.has(origin)));
+}
+
+// Firefox treats every MV3 host permission as optional: users can revoke any
+// of them in about:addons, and hosts added by an update are not granted. The
+// whole install therefore has to be checked, not just the manifest.
+export async function missingSitePlatforms(permissionApi, manifest = null) {
+  return incompletePlatformPermissions(permissionApi, allPlatformIds(manifest));
+}
+
 export function platformIdsWithPermissionGroups(platformIds = []) {
   return [...new Set(platformIds.filter(platformId => PLATFORM_PERMISSION_GROUPS[platformId]))];
 }

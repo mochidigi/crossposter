@@ -14,7 +14,7 @@ import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinatio
 import { isFreshComposerUrl } from "./shared/compose-mode.js";
 import { CROSSPOST_SESSIONS_KEY, crosspostSessionIdFromUrl } from "./shared/crosspost-sessions.js";
 import { settleVideoResolution } from "./shared/video-resolution-state.js";
-import { incompletePlatformPermissions, requestCompletePlatformPermissions } from "./shared/platform-permissions.js";
+import { incompletePlatformPermissions, platformLabel, requestCompletePlatformPermissions } from "./shared/platform-permissions.js";
 
 const showInfo = document.querySelector("#showInfo");
 // Onboarding markup is only needed when the info button is used; import it on
@@ -102,6 +102,14 @@ console.debug(`[crossposter] first paint ${Math.round(performance.now())}ms sinc
 draft.media = await hydrateStoredMedia(draft.media);
 renderAll();
 composerReady = true;
+// A late permission grant or a suspended background page can leave the card
+// marked "Locating video" after the session has already settled; keep
+// reconciling with the stored session until nothing is resolving.
+const resolutionWatch = setInterval(() => {
+  if (!draft.media.some(item => item?.resolving)) return;
+  reconcileCapturedVideoResolution().catch(() => {});
+}, 5000);
+setTimeout(() => clearInterval(resolutionWatch), 5 * 60 * 1000);
 initializeSourcePermissions().catch(error => showSourcePermissionGate(error instanceof Error ? error.message : String(error)));
 const addLink = document.querySelector("#addLink");
 renderComposerMode();
@@ -277,18 +285,6 @@ function renderMeta() {
   document.querySelector("#source").textContent = draft.sourceUrl ? label : "Fresh post";
 }
 
-function platformLabel(id) {
-  return ({
-    upscrolled: "UpScrolled",
-    linkedin: "LinkedIn",
-    x: "X",
-    bluesky: "Bluesky",
-    instagram: "Instagram",
-    threads: "Threads",
-    facebook: "Facebook",
-    youtube: "YouTube"
-  })[id] || id;
-}
 function renderDestinations() {
   const enabled = new Set(enabledPlatforms);
   setHtml(destinations, NATIVE_DESTINATIONS.filter(destination => enabled.has(destination.id)).map(destination => {

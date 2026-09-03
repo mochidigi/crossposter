@@ -445,3 +445,22 @@ input, select { color: #111; background: #fff; }
 #source:empty::before { content: "Loading…"; color: var(--muted, #888); animation: loading-hint 1.2s ease-in-out infinite alternate; }
 #destinations:empty::before { content: "Loading destinations…"; display: block; padding: 10px 0; color: var(--muted, #888); animation: loading-hint 1.2s ease-in-out infinite alternate; }
 @keyframes loading-hint { from { opacity: .35; } to { opacity: .9; } }
+
+/* Site-access onboarding (welcome.html) and the popup's missing-access notice */
+.site-access-notice { margin: 14px 0 6px; padding: 14px 16px; border: 1px solid #111; background: #fffbe6; }
+.site-access-notice strong { display: block; margin-bottom: 4px; }
+.site-access-notice p { margin: 0 0 6px; color: #333; font-size: 13px; }
+.welcome-card { max-width: 640px; }
+.welcome-card h1 { margin-bottom: 6px; }
+.welcome-card .lead { font-size: 16px; color: #333; }
+.welcome-card ul.site-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px 14px; margin: 18px 0; padding: 0; list-style: none; }
+.welcome-card ul.site-list li { padding: 8px 10px; border: 1px solid #ddd; font-size: 14px; }
+.welcome-card ul.site-list li.granted { border-color: #111; }
+.welcome-card ul.site-list li.granted::before { content: "\2713 "; }
+.welcome-card ul.site-list li.missing::before { content: "\25CB "; color: #777; }
+.welcome-card .welcome-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+.welcome-card .welcome-actions .primary { min-width: 220px; }
+.welcome-card .errors:empty { display: none; }
+.welcome-card details { margin-top: 22px; font-size: 13px; color: #333; }
+.welcome-card details summary { cursor: pointer; font-weight: 650; }
+.welcome-card details ol { padding-left: 20px; }

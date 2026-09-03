@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Allow site access · Crossposter</title><link rel="stylesheet" href="styles.css"></head>
+<body><main class="settings-card welcome-card">
+  <div class="eyebrow">Crossposter</div>
+  <h1>Allow site access</h1>
+  <p class="lead">Crossposter reads the post you right-click and fills each network’s own composer. To do that it needs access to the social sites and their media servers.</p>
+  <ul id="siteList" class="site-list" aria-label="Sites Crossposter needs access to"></ul>
+  <p id="error" class="errors" role="alert"></p>
+  <div class="welcome-actions"><button id="allow" class="primary" type="button">Allow site access</button><button id="later" class="secondary" type="button">Not now</button></div>
+  <p class="fineprint" id="hint">Nothing is read until you invoke Crossposter, and nothing leaves your browser. You can change site access at any time in your browser’s add-on settings.</p>
+  <details><summary>The prompt didn’t appear, or access is still off?</summary>
+    <ol>
+      <li>Open your browser’s add-on manager (Firefox: <code>about:addons</code>, Chrome: <code>chrome://extensions</code>).</li>
+      <li>Open Crossposter and choose <b>Permissions</b> (Firefox) or <b>Site access</b> (Chrome).</li>
+      <li>Turn on access for every listed site, then reload any open social tabs.</li>
+    </ol>
+  </details>
+</main><script type="module" src="welcome.js"></script></body></html>
