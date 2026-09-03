@@ -17,7 +17,7 @@ export function shouldRetryCanonicalComposer(network, result) {
 }
 
 export function shouldRetryMediaAttachment(network, result, mediaCount) {
-  return ["x", "linkedin", "upscrolled", "threads"].includes(network) && result?.composerOpened === true && Number(mediaCount) > 0 && Number(result.mediaInserted || 0) === 0;
+  return ["x", "linkedin", "upscrolled", "threads", "bluesky"].includes(network) && result?.composerOpened === true && Number(mediaCount) > 0 && Number(result.mediaInserted || 0) === 0;
 }
 
 export function shouldRetryTextInsertion(network, result, text) {

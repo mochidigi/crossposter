@@ -1,7 +1,7 @@
 # Permission audit
 
 Every permission in the manifests, why it is needed, and where it is used.
-Audited 2026-08-29 against the current code; all requested permissions are in
+Audited 2026-09-03 against the current code; all requested permissions are in
 active use. This doubles as the justification text for store review.
 
 ## Permissions
@@ -29,13 +29,19 @@ Host permissions fall into three groups:
   `*.fbcdn.net`, `*.video.upscrolled.com`, `video.bsky.app`): fetching the
   original image/video files of a captured post so they can be re-uploaded as
   genuine files into the destination composer.
-- **Public post APIs** (`cdn.syndication.twimg.com`, `public.api.bsky.app`):
+- **Public post APIs** (`cdn.syndication.twimg.com`, covered by the X
+  `*.twimg.com` grant, and `public.api.bsky.app`):
   resolving a post's direct video renditions without any third-party service.
 - **Platform origins** (`upscrolled.com`, `x.com`, `twitter.com`, `linkedin.com`,
   `bsky.app`, `instagram.com`, `threads.com`, `facebook.com`): platform-specific
   capture and native-composer automation. Content scripts are registered dynamically
   only for platforms enabled in Settings; disabling a platform unregisters its scripts
   without changing the extension's installed permission set.
+
+Crossposter treats each platform origin and its related API/media origins as
+one permission bundle. Source capture, media resolution, and destination
+handoff stop until the complete bundle is granted; enabling a platform in
+Settings requests the same complete bundle.
 
 ## Review conclusions
 

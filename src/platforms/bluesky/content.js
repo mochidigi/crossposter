@@ -83,7 +83,28 @@
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector)); }
         catch { return helpers.manualResult("Open Bluesky’s post composer, then use the Crossposter sidebar."); }
       }
-      return helpers.fillNativeComposer(field, handoff.text || "", files);
+      const textInserted = helpers.setComposerText(field, handoff.text || "");
+      let mediaInserted = 0;
+      if (files.length) {
+        const root = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
+        let input = helpers.findCompatibleFileInput(files, root);
+        if (!input) {
+          // Bluesky does not mount its file input until this control is
+          // activated. A synthetic click creates the hidden input without
+          // choosing a file; Crossposter then supplies the prepared File.
+          helpers.findVisible("[data-testid='openMediaBtn']", root)?.click();
+        }
+        try {
+          input ||= await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root), 15000);
+        } catch {}
+        mediaInserted = input
+          ? helpers.attachFilesToInput(files, input)
+          : helpers.attachNativeFiles(files, root);
+      }
+      const errors = [];
+      if (handoff.text && !textInserted) errors.push("Bluesky did not accept the post text.");
+      if (files.length && !mediaInserted) errors.push("Bluesky did not expose its media upload control.");
+      return { ok: true, composerOpened: true, textInserted, mediaInserted, error: errors.join(" ") };
     }
   });
 

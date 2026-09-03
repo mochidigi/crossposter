@@ -13,6 +13,7 @@ import { DETECTED_DRAFTS_KEY, detectedBadgeText, enqueueDetectedDraft, removeDet
 import { CROSSPOST_SESSIONS_KEY, crosspostComposerUrl, recordPostedDestination, resetCrosspostHandoff, sessionForTab, sessionPreview, sessionTabIds } from "./shared/crosspost-sessions.js";
 import { markVideoResolving, settleVideoResolution } from "./shared/video-resolution-state.js";
 import { resolvePageVideoHint } from "./shared/source-video.js";
+import { incompletePlatformPermissions } from "./shared/platform-permissions.js";
 
 const MENU_ID = "crosspost-studio";
 let trayWindowId = null;
@@ -158,7 +159,11 @@ async function reinjectContentScripts(tabId, frameId) {
   const preferences = await readPlatformPreferences();
   const files = contentScriptFilesForUrl(tab.url, preferences.enabledPlatforms);
   if (!files.length) return false;
-  const target = { tabId, ...(Number.isInteger(frameId) ? { frameIds: [frameId] } : {}) };
+  const platform = platformContentScriptForUrl(tab.url);
+  const target = {
+    tabId,
+    ...(Number.isInteger(frameId) ? { frameIds: [frameId] } : platform?.allFrames ? { allFrames: true } : {})
+  };
   await ext.scripting.executeScript({ target, files });
   return true;
 }
@@ -169,6 +174,7 @@ async function reinjectContentScripts(tabId, frameId) {
 async function sendComposerMessage(tabId, message) {
   const deadline = Date.now() + COMPOSER_DELIVERY_TIMEOUT_MS;
   let reinjected = false;
+  let reinjectionError = null;
   for (;;) {
     let response, error = null;
     try { response = await ext.tabs.sendMessage(tabId, message); }
@@ -179,14 +185,21 @@ async function sendComposerMessage(tabId, message) {
     }
     if (error && !reinjected && isMissingContentScriptError(error)) {
       reinjected = true;
-      if (await reinjectContentScripts(tabId).catch(() => false)) continue;
+      try {
+        if (await reinjectContentScripts(tabId)) {
+          continue;
+        }
+      } catch (caught) {
+        reinjectionError = caught;
+      }
     }
     if (Date.now() >= deadline) break;
     await delay(COMPOSER_DELIVERY_RETRY_MS);
   }
   // No frame claimed the composer in time: make the top document answer so
   // the user gets its manual-fallback guidance instead of a silent timeout.
-  return ext.tabs.sendMessage(tabId, { ...message, force: true }, { frameId: 0 });
+  try { return await ext.tabs.sendMessage(tabId, { ...message, force: true }, { frameId: 0 }); }
+  catch (error) { throw reinjectionError || error; }
 }
 
 async function readPlatformPreferences() {
@@ -361,6 +374,12 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
+  if (message?.type === "RESUME_CAPTURED_VIDEO") {
+    resumeCapturedVideoResolution(message.sessionId, sender.tab?.id)
+      .then(result => sendResponse({ ok: true, ...result }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
   if (message?.type === "ACTIVATE_CROSSPOST_SESSION") {
     activateCrosspostSession(message.sessionId)
       .then(tab => sendResponse({ ok: true, tabId: tab?.id }))
@@ -482,12 +501,7 @@ async function confirmLinkedInPost(candidate) {
   const response = await sendContentMessage(candidate.tabId, { type: "DETECT_LINKEDIN_POST", candidate });
   if (!response?.ok || !response.captured) return false;
   const captured = response.captured;
-  let media = Array.isArray(captured.media) ? captured.media : [];
-  const video = media.find(item => item.kind === "video");
-  if (video) {
-    try { media = await resolveReshareMedia(media, { source: "linkedin", sources: video.sources || null, src: video.url || "" }); }
-    catch {}
-  }
+  const media = Array.isArray(captured.media) ? captured.media : [];
   const draft = createDraft({ ...captured, media, sourceIsOwn: true, detectedAt: Date.now() });
   const stored = await ext.storage.local.get(DETECTED_DRAFTS_KEY);
   const result = enqueueDetectedDraft(stored[DETECTED_DRAFTS_KEY], draft);
@@ -525,7 +539,9 @@ async function openDetectedDraft(id) {
   await ext.storage.local.set({ [DETECTED_DRAFTS_KEY]: remaining });
   await refreshDetectedBadge(remaining);
   try { await ext.notifications?.clear(`${LINKEDIN_NOTIFICATION_PREFIX}${id}`); } catch {}
-  await openCrosspostComposer(draft);
+  const video = draft.media.find(item => item?.kind === "video");
+  const videoHint = video ? { source: "linkedin", sources: video.sources || null, src: video.url || "" } : null;
+  await openCapturedPost(draft, videoHint);
   return true;
 }
 
@@ -549,8 +565,24 @@ async function openCapturedPost(captured = {}, videoHint, options = {}) {
   const hasVideo = media.some(item => item?.kind === "video");
   if (!hasVideo) return openCrosspostComposer(createDraft({ ...captured, media }), options);
 
+  const draft = createDraft({ ...captured, media });
   const resolutionId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const resolution = Promise.resolve(videoHint)
+  const permissionsComplete = !(await incompletePlatformPermissions(ext.permissions, [draft.sourceNetwork])).length;
+  const pendingVideoResolution = permissionsComplete ? null : {
+    resolutionId,
+    hint: await Promise.resolve(videoHint || {})
+  };
+  const session = await openCrosspostComposer({
+    ...draft,
+    media: markVideoResolving(media, resolutionId)
+  }, { ...options, pendingVideoResolution });
+
+  if (permissionsComplete) startCapturedVideoResolution(session.id, resolutionId, media, videoHint);
+  return session;
+}
+
+function startCapturedVideoResolution(sessionId, resolutionId, media, videoHint) {
+  return Promise.resolve(videoHint)
     .then(hint => resolveReshareMedia(media, hint || {}))
     .then(
       resolved => ({ resolvedItem: resolved.find(item => item?.kind === "video"), error: "" }),
@@ -558,16 +590,25 @@ async function openCapturedPost(captured = {}, videoHint, options = {}) {
         resolvedItem: null,
         error: error instanceof Error ? error.message : "The video could not be located."
       })
-    );
-  const session = await openCrosspostComposer(createDraft({
-    ...captured,
-    media: markVideoResolving(media, resolutionId)
-  }), options);
-
-  resolution
-    .then(result => settleCapturedVideo(session.id, resolutionId, result.resolvedItem, result.error))
+    )
+    .then(result => settleCapturedVideo(sessionId, resolutionId, result.resolvedItem, result.error))
     .catch(() => {});
-  return session;
+}
+
+async function resumeCapturedVideoResolution(sessionId, tabId) {
+  const session = await requireCrosspostSession(sessionId, tabId);
+  const pending = session.pendingVideoResolution;
+  if (!pending) return { resumed: false, media: session.draft.media };
+  const missing = await incompletePlatformPermissions(ext.permissions, [session.draft.sourceNetwork]);
+  if (missing.length) throw new Error(`Allow Crossposter full access to ${session.draft.sourceNetwork} before continuing.`);
+  session.pendingVideoResolution = null;
+  session.updatedAt = Date.now();
+  await persistCrosspostSessions();
+  // Keep the runtime message event alive until lookup settles. Firefox may
+  // suspend the background page once an immediate response is sent, leaving
+  // the Compose card permanently marked as resolving.
+  await startCapturedVideoResolution(session.id, pending.resolutionId, session.draft.media, pending.hint);
+  return { resumed: true, media: session.draft.media };
 }
 
 async function settleCapturedVideo(sessionId, resolutionId, resolvedItem, error = "") {
@@ -591,7 +632,7 @@ async function settleCapturedVideo(sessionId, resolutionId, resolvedItem, error 
   notifyTray();
 }
 
-async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboarding = false, showSettings = false, windowId } = {}) {
+async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboarding = false, showSettings = false, windowId, pendingVideoResolution = null } = {}) {
   await backgroundStateReady.catch(() => {});
   const draft = createDraft(draftInput);
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -604,6 +645,7 @@ async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboa
     sourceTabId: null,
     tabIds: [],
     lastActiveTabId: null,
+    pendingVideoResolution,
     handoff: { state: "idle", text: draft.text || "", media: [], networks: [] },
     createdAt: Date.now(),
     updatedAt: Date.now()
@@ -810,9 +852,15 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
     const { target, tab, error } = entry;
     session.handoff = { ...session.handoff, currentNetwork: target.id, results: [...results], tabGroupId, groupError };
     session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
-    if (error) { results.push({ network: target.id, error, result: null }); continue; }
+    if (error) {
+      results.push({ network: target.id, error, result: null });
+      continue;
+    }
     try { results.push({ network: target.id, ...await fillNativeComposer(target, tab, handoff) }); }
-    catch (caught) { results.push({ network: target.id, tabId: tab.id, error: caught instanceof Error ? caught.message : String(caught), result: null }); }
+    catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      results.push({ network: target.id, tabId: tab.id, error: message, result: null });
+    }
   }
   if (!isCurrentHandoff(session.id, attemptId)) return { results, tabGroupId, groupError, cancelled: true };
   session.handoff = { ...session.handoff, state: "ready", currentNetwork: "", results, tabGroupId, groupError };
@@ -873,10 +921,17 @@ async function fillNativeComposer(target, initialTab, handoff) {
     try { result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
     catch (error) { result = { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
   }
-  if (shouldRetryMediaAttachment(target.id, result, handoff.media.length) || shouldRetryTextInsertion(target.id, result, handoff.text)) {
+  const retryMedia = shouldRetryMediaAttachment(target.id, result, handoff.media.length);
+  const retryText = shouldRetryTextInsertion(target.id, result, handoff.text);
+  if (retryMedia || retryText) {
     await delay(1500);
-    try { result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
-    catch (error) { result = { ok: true, composerOpened: true, textInserted: result.textInserted, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
+    const firstResult = result;
+    const retryHandoff = retryMedia && firstResult.textInserted && !retryText ? { ...handoff, text: "" } : handoff;
+    try {
+      result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff: retryHandoff });
+      if (!retryHandoff.text && handoff.text) result = { ...result, textInserted: true };
+    }
+    catch (error) { result = { ok: true, composerOpened: true, textInserted: firstResult.textInserted, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
   }
   if (!result?.ok) result = { ...result, textInserted: false, mediaInserted: 0 };
   return { tabId: tab.id, result };

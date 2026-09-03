@@ -14,6 +14,7 @@ import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinatio
 import { isFreshComposerUrl } from "./shared/compose-mode.js";
 import { CROSSPOST_SESSIONS_KEY, crosspostSessionIdFromUrl } from "./shared/crosspost-sessions.js";
 import { settleVideoResolution } from "./shared/video-resolution-state.js";
+import { incompletePlatformPermissions, requestCompletePlatformPermissions } from "./shared/platform-permissions.js";
 
 const showInfo = document.querySelector("#showInfo");
 // Onboarding markup is only needed when the info button is used; import it on
@@ -83,6 +84,8 @@ const imageDialog = document.querySelector("#imageDialog"), imageCanvas = docume
 const imageCropControls = document.querySelector("#imageCropControls"), imageColor = document.querySelector("#imageColor"), imageError = document.querySelector("#imageError");
 const composeMain = document.querySelector("main"), composeTopbar = document.querySelector(".topbar");
 const handoffOverlay = document.querySelector("#handoffOverlay"), handoffCancel = document.querySelector("#handoffCancel"), handoffCancelError = document.querySelector("#handoffCancelError");
+const permissionDialog = document.querySelector("#permissionDialog"), permissionTitle = document.querySelector("#permissionTitle"), permissionCopy = document.querySelector("#permissionCopy");
+const permissionAllow = document.querySelector("#permissionAllow"), permissionCancel = document.querySelector("#permissionCancel"), permissionError = document.querySelector("#permissionError");
 let clipState = null;
 let clipCropGesture = null;
 let imageState = null;
@@ -99,13 +102,7 @@ console.debug(`[crossposter] first paint ${Math.round(performance.now())}ms sinc
 draft.media = await hydrateStoredMedia(draft.media);
 renderAll();
 composerReady = true;
-if (queuedVideoResolution) {
-  applyCapturedVideoResolution(queuedVideoResolution);
-  queuedVideoResolution = null;
-} else {
-  prepareStreamPreviews().catch(() => {});
-  reconcileCapturedVideoResolution().catch(() => {});
-}
+initializeSourcePermissions().catch(error => showSourcePermissionGate(error instanceof Error ? error.message : String(error)));
 const addLink = document.querySelector("#addLink");
 renderComposerMode();
 if (addLink) addLink.onclick = () => { if (draft.sourceUrl && !text.value.includes(draft.sourceUrl)) { text.value = `${text.value.trim()}\n\n${draft.sourceUrl}`.trim(); text.dispatchEvent(new Event("input")); } };
@@ -178,7 +175,79 @@ document.addEventListener("keydown", event => {
 });
 document.querySelector("#publish").onclick = publish;
 handoffCancel.onclick = cancelNativeHandoff;
+permissionAllow.onclick = grantSourcePermissions;
+permissionCancel.onclick = cancelPermissionGate;
+permissionDialog.addEventListener("cancel", event => event.preventDefault());
 setHandoffActive(Boolean(crosspostSession && crosspostSession.handoff?.state !== "idle"));
+
+async function initializeSourcePermissions() {
+  const missing = await incompletePlatformPermissions(ext.permissions, [draft.sourceNetwork]);
+  if (missing.length) {
+    showSourcePermissionGate();
+    return;
+  }
+  await sourcePermissionsReady();
+}
+
+function showSourcePermissionGate(error = "") {
+  const platform = platformLabel(draft.sourceNetwork);
+  permissionTitle.textContent = `Allow access to ${platform}`;
+  permissionCopy.textContent = `Crossposter needs access to ${platform} and its related media services as one set. This prevents incomplete captures and media errors.`;
+  permissionError.textContent = error;
+  permissionAllow.disabled = false;
+  permissionAllow.textContent = "Allow access";
+  if (!permissionDialog.open) permissionDialog.showModal();
+}
+
+async function grantSourcePermissions() {
+  permissionAllow.disabled = true;
+  permissionAllow.textContent = "Checking…";
+  permissionError.textContent = "";
+  const result = await requestCompletePlatformPermissions(ext.permissions, [draft.sourceNetwork]);
+  if (!result.ok) {
+    const platform = result.missing.map(platformLabel).join(", ") || platformLabel(draft.sourceNetwork);
+    showSourcePermissionGate(result.error || `Allow every requested permission for ${platform} to use it with Crossposter.`);
+    return;
+  }
+  permissionDialog.close();
+  await sourcePermissionsReady();
+}
+
+async function cancelPermissionGate() {
+  permissionCancel.disabled = true;
+  permissionAllow.disabled = true;
+  const response = await ext.runtime.sendMessage({ type: "CLOSE_CROSSPOST_SESSION", sessionId }).catch(() => null);
+  if (!response?.ok) {
+    permissionCancel.disabled = false;
+    permissionAllow.disabled = false;
+    permissionError.textContent = response?.error || "This Crossposter draft could not be closed.";
+  }
+}
+
+async function sourcePermissionsReady() {
+  const response = sessionId
+    ? await ext.runtime.sendMessage({ type: "RESUME_CAPTURED_VIDEO", sessionId }).catch(error => ({ ok: false, error: error instanceof Error ? error.message : String(error) }))
+    : { ok: true };
+  if (!response?.ok) {
+    showSourcePermissionGate(response?.error || "Crossposter could not verify access to this platform.");
+    return;
+  }
+  if (response.resumed && Array.isArray(response.media)) {
+    draft.media = response.media;
+    renderMedia();
+    renderPublishAction();
+    if (!draft.media.some(item => item?.resolveError)) prepareStreamPreviews().catch(() => {});
+    queuedVideoResolution = null;
+    return;
+  }
+  if (queuedVideoResolution) {
+    applyCapturedVideoResolution(queuedVideoResolution);
+    queuedVideoResolution = null;
+    return;
+  }
+  prepareStreamPreviews().catch(() => {});
+  reconcileCapturedVideoResolution().catch(() => {});
+}
 
 function applyCapturedVideoResolution(message) {
   const media = settleVideoResolution(draft.media, message.resolutionId, message.resolvedItem, message.error || "");
@@ -206,6 +275,19 @@ function renderMeta() {
   document.querySelector("#count").textContent = `${draft.text.length} / 3000`;
   const label = draft.sourceNetwork === "web" ? "Captured from the web" : `Captured from ${draft.sourceNetwork}`;
   document.querySelector("#source").textContent = draft.sourceUrl ? label : "Fresh post";
+}
+
+function platformLabel(id) {
+  return ({
+    upscrolled: "UpScrolled",
+    linkedin: "LinkedIn",
+    x: "X",
+    bluesky: "Bluesky",
+    instagram: "Instagram",
+    threads: "Threads",
+    facebook: "Facebook",
+    youtube: "YouTube"
+  })[id] || id;
 }
 function renderDestinations() {
   const enabled = new Set(enabledPlatforms);
@@ -297,6 +379,12 @@ async function saveSettings() {
   const nextDefaults = normalizeDefaultDestinations(rows.filter(row => row.querySelector("[data-platform-default]").checked).map(row => row.dataset.platform));
   const nextInlineActions = settingsInlineActions.checked;
   settingsError.textContent = "";
+  const permissionResult = await requestCompletePlatformPermissions(ext.permissions, nextEnabled);
+  if (!permissionResult.ok) {
+    const platforms = permissionResult.missing.map(platformLabel).join(", ");
+    settingsError.textContent = permissionResult.error || `Allow every requested permission for ${platforms}, or disable those platforms.`;
+    return;
+  }
   const response = await ext.runtime.sendMessage({
     type: "APPLY_PLATFORM_PREFERENCES",
     enabledPlatforms: nextEnabled,
@@ -698,12 +786,16 @@ async function cancelNativeHandoff() {
 
 async function publish() {
   const errors = validateDraft(draft); const box = document.querySelector("#errors"); box.textContent = errors.join(" "); if (errors.length) return;
+  const selected = selectedNativeDestinations(draft), networkIds = selected.map(destination => destination.id), button = document.querySelector("#publish");
+  // Request each selected platform's complete page/API/media bundle while the
+  // extension-page click still carries a user gesture. Recheck the source too
+  // in case its access was revoked while this draft was open.
+  const hostPermissionRequest = requestCompletePlatformPermissions(ext.permissions, [draft.sourceNetwork, ...networkIds]);
   // Firefox: sidebarAction.open() only works inside a user-action handler and
   // the gesture does not survive messaging to the background — open the
   // sidebar here, synchronously, while the Continue click is still live.
   // (Chrome routes through sidePanel.open() in the background instead.)
   if (!ext.sidePanel && ext.sidebarAction?.open) ext.sidebarAction.open().catch(() => {});
-  const selected = selectedNativeDestinations(draft), networkIds = selected.map(destination => destination.id), button = document.querySelector("#publish");
   const generation = ++publishGeneration;
   const attemptId = crypto.randomUUID();
   activeHandoffAttemptId = attemptId;
@@ -714,7 +806,14 @@ async function publish() {
   // Sidebar APIs require a live user gesture. Open the extension-owned surface
   // before any asynchronous storage or media work, then populate it while the
   // native tabs open.
-  try { await openNativeTray(networkIds, attemptId); }
+  try {
+    const permissionResult = await hostPermissionRequest;
+    if (!permissionResult.ok) {
+      const platforms = permissionResult.missing.map(platformLabel).join(", ");
+      throw new Error(permissionResult.error || `Allow every requested permission for ${platforms} before continuing.`);
+    }
+    await openNativeTray(networkIds, attemptId);
+  }
   catch (error) {
     if (generation !== publishGeneration) return;
     box.textContent = error instanceof Error ? error.message : String(error);

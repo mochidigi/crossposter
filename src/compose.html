@@ -10,6 +10,15 @@
   </section>
   <aside class="publish-card"><div class="eyebrow">Destinations</div><h2>Where should it go?</h2><div id="destinations"></div><div id="errors" class="errors"></div><button id="publish" class="primary publish">Continue <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></button><p class="fineprint">Crossposter opens and fills each native composer.<br />You review and post.</p></aside>
 </main>
+<dialog id="permissionDialog" class="preferences-dialog permission-dialog" aria-labelledby="permissionTitle">
+  <section class="preferences-card permission-card">
+    <div class="eyebrow">Site access required</div>
+    <h2 id="permissionTitle">Allow platform access</h2>
+    <p id="permissionCopy" class="preferences-copy"></p>
+    <p id="permissionError" class="errors" role="alert"></p>
+    <footer class="clip-actions"><button id="permissionCancel" class="secondary" type="button">Cancel</button><button id="permissionAllow" class="primary" type="button">Allow access</button></footer>
+  </section>
+</dialog>
 <section id="handoffOverlay" class="handoff-overlay" role="dialog" aria-modal="true" aria-labelledby="handoffOverlayTitle" hidden>
   <div class="handoff-overlay-card">
     <div class="eyebrow">Native handoff</div>

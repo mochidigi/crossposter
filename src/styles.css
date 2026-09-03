@@ -196,6 +196,9 @@ input, select { color: #111; background: #fff; }
 .inline-action-preference small { color: #666; font-size: 11px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .preferences-card .clip-actions { margin-top: 22px; }
+.permission-dialog { width: min(520px, calc(100vw - 30px)); }
+.permission-card h2 { margin: 7px 0 12px; }
+.permission-card .preferences-copy { margin-bottom: 14px; }
 .settings-danger { margin-top: 24px; padding-top: 20px; border-top: 1px solid #aaa; }
 .settings-danger strong { display: block; font-size: 13px; }
 .settings-danger > p { margin: 5px 0 12px; color: #666; font-size: 12px; }

@@ -60,6 +60,7 @@
   // composer root is the nearest ancestor that holds the heading, the media
   // file input, and the footer buttons.
   const COMPOSER_FIELD = "[contenteditable='true'][role='textbox']";
+  const insertedTextByComposer = new WeakMap();
   function composerRoot(element, helpers) {
     const dialog = helpers.closestDeep(element, "[role='dialog'], dialog");
     if (dialog) return dialog;
@@ -180,14 +181,21 @@
       // Threads can accept a synthetic paste before its contenteditable text
       // becomes readable. Do not follow that successful paste with insertText,
       // which would append a duplicate caption.
-      const textInserted = await helpers.pasteComposerText(
-        field,
-        String(handoff.text || "").slice(0, 500),
-        { fallback: false }
-      );
+      const root = composerRoot(field, helpers) || document;
+      const caption = String(handoff.text || "").slice(0, 500);
+      let textInserted = !caption || insertedTextByComposer.get(root) === caption;
+      if (!textInserted) {
+        // Firefox can deliver the synthetic paste to Threads while its Xray
+        // wrapper still reports an empty editor. pasteComposerText then runs
+        // its insertText fallback and duplicates the whole caption. Use one
+        // directly observable insertion method in Firefox.
+        textInserted = globalThis.browser?.runtime
+          ? helpers.insertComposerTextOnce(field, caption)
+          : await helpers.pasteComposerText(field, caption, { fallback: false });
+        if (textInserted) insertedTextByComposer.set(root, caption);
+      }
       let mediaInserted = 0;
       if (files.length) {
-        const root = composerRoot(field, helpers) || document;
         try { await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, false), 15000); } catch {}
         mediaInserted = helpers.attachNativeFiles(files, root);
       }

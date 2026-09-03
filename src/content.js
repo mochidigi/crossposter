@@ -553,6 +553,19 @@
     return composerHasText(element);
   }
 
+  function insertComposerTextOnce(element, value) {
+    if (!element || element.isConnected === false) return false;
+    if (!value || composerHasText(element)) return true;
+    element.focus();
+    selectComposerContents(element);
+    // execCommand performs the mutation and emits the editor's input event.
+    // Do not inspect the result or dispatch a fallback: Firefox Xray wrappers
+    // can lag behind a controlled editor even when the page accepted it.
+    try { document.execCommand("insertText", false, value); }
+    catch { return false; }
+    return true;
+  }
+
   async function pasteComposerText(element, value, options = {}) {
     if (!element || element.isConnected === false) return false;
     if (!value) return true;
@@ -590,7 +603,8 @@
     return files.every(file => accept.split(",").some(rule => {
       const value = rule.trim().toLowerCase();
       return value === "*/*" || value === file.type.toLowerCase()
-        || (value.endsWith("/*") && file.type.toLowerCase().startsWith(value.slice(0, -1)));
+        || (value.endsWith("/*") && file.type.toLowerCase().startsWith(value.slice(0, -1)))
+        || (value.startsWith(".") && String(file.name || "").toLowerCase().endsWith(value));
     }));
   }
 
@@ -681,7 +695,7 @@
     mediaFromNodes, identityFromHref, firstText, capturePost: capture,
     manualResult, queryAllDeep, closestDeep, findVisible, normalizeText, isVisible, findDialogWithText, findClickable, waitForElement,
     svgOf, iconMatches, iconControls, findIconControl, textWithout,
-    setComposerText, pasteComposerText, composerHasText,
+    setComposerText, insertComposerTextOnce, pasteComposerText, composerHasText,
     attachNativeFiles, fillNativeComposer, findCompatibleFileInput, attachFilesToInput
   });
 
