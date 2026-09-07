@@ -437,10 +437,20 @@
     const existing = find();
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve, reject) => {
+      let settled = false;
       const timeout = setTimeout(() => finish(null, new Error("The native composer did not appear.")), timeoutMs);
-      const interval = setInterval(() => { const element = find(); if (element) finish(element); }, 75);
-      const observer = new MutationObserver(() => { const element = find(); if (element) finish(element); });
+      const check = () => {
+        if (settled) return;
+        try { const element = find(); if (element) finish(element); }
+        catch (error) { finish(null, error); }
+      };
+      // Polling also detects changes inside open shadow roots, which the
+      // document observer cannot see, and roots attached after observation.
+      const interval = setInterval(check, 75);
+      const observer = new MutationObserver(check);
       function finish(element, error) {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout); clearInterval(interval); observer.disconnect(); error ? reject(error) : resolve(element);
       }
       observer.observe(document.documentElement, {
@@ -691,12 +701,18 @@
     return files;
   }
 
+  function reportComposerStage(handoffId, network, stage) {
+    if (!handoffId) return;
+    try { runtime.sendMessage({ type: "NATIVE_COMPOSER_STAGE", handoffId, network, stage })?.catch?.(() => {}); }
+    catch {}
+  }
+
   const helpers = Object.freeze({
     mediaFromNodes, identityFromHref, firstText, capturePost: capture,
     manualResult, queryAllDeep, closestDeep, findVisible, normalizeText, isVisible, findDialogWithText, findClickable, waitForElement,
     svgOf, iconMatches, iconControls, findIconControl, textWithout,
     setComposerText, insertComposerTextOnce, pasteComposerText, composerHasText,
-    attachNativeFiles, fillNativeComposer, findCompatibleFileInput, attachFilesToInput
+    attachNativeFiles, fillNativeComposer, findCompatibleFileInput, attachFilesToInput, reportComposerStage
   });
 
   const listener = (message, _sender, sendResponse) => {
@@ -743,6 +759,10 @@
   globalThis.CrossposterContent = {
     register,
     helpers,
+    composerReadiness(network) {
+      const adapter = adapterById(network);
+      return adapter?.composerReadiness?.({ helpers }) || 0;
+    },
     dispose() {
       nativePostAttempt++;
       document.removeEventListener("contextmenu", contextHandler, true);

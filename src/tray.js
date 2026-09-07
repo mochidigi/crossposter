@@ -2,6 +2,7 @@ import { ext } from "./shared/browser.js";
 import { nativeDestination } from "./shared/destinations.js";
 import { populateFileDrag } from "./shared/drag.js";
 import { getHandoffMedia } from "./shared/media-store.js";
+import { LINKEDIN_HANDOFF_STAGES } from "./shared/handoff.js";
 
 const status = document.querySelector("#status"), empty = document.querySelector("#empty"), content = document.querySelector("#content");
 const textSection = document.querySelector("#textSection"), textCard = document.querySelector("#textCard"), copyButton = document.querySelector("#copyText");
@@ -150,13 +151,17 @@ async function fileForMedia(item) {
 
 function statusText(handoff) {
   if (handoff.state === "preparing") return "Preparing the draggable files…";
-  if (handoff.state === "filling") return `Opening and filling ${nativeDestination(handoff.currentNetwork)?.label || "the native composer"}…`;
+  if (handoff.state === "filling") return (handoff.composerProgress?.network === handoff.currentNetwork && LINKEDIN_HANDOFF_STAGES[handoff.composerProgress?.stage])
+    || `Opening and filling ${nativeDestination(handoff.currentNetwork)?.label || "the native composer"}…`;
   if (handoff.state === "error") return handoff.error || "Open the destination manually and use this tray.";
   if (handoff.mediaErrors?.length) return `Media could not be prepared: ${handoff.mediaErrors.join(" ")}`;
   const posted = handoff.postedNetworks || [];
   if (posted.length && posted.length === (handoff.networks || []).length) return "Posted to every destination in this crosspost.";
   if (posted.length) return `Posted to ${posted.length} of ${(handoff.networks || []).length} destinations.`;
-  const results = handoff.results || [], filled = results.filter(item => item.result?.textInserted || item.result?.mediaInserted).length;
+  const results = handoff.results || [];
+  const failures = results.filter(item => item.error || item.result?.error);
+  if (failures.length) return failures.map(item => `${nativeDestination(item.network)?.label || item.network}: ${item.error || item.result.error}`).join(" ");
+  const filled = results.filter(item => item.result?.textInserted || item.result?.mediaInserted).length;
   if (filled === results.length && filled) return `${filled} composer${filled === 1 ? "" : "s"} filled. Review and post when ready.`;
   if (filled) return `${filled} composer${filled === 1 ? "" : "s"} filled. Use this sidebar for the remaining destinations.`;
   const labels = (handoff.networks || []).map(nativeDestination).filter(Boolean).map(destination => destination.label).join(" or ");

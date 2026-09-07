@@ -17,12 +17,26 @@ export function shouldRetryCanonicalComposer(network, result) {
 }
 
 export function shouldRetryMediaAttachment(network, result, mediaCount) {
-  return ["x", "linkedin", "upscrolled", "threads", "bluesky"].includes(network) && result?.composerOpened === true && Number(mediaCount) > 0 && Number(result.mediaInserted || 0) === 0;
+  return result?.retryable !== false && ["x", "linkedin", "upscrolled", "threads", "bluesky"].includes(network) && result?.composerOpened === true && Number(mediaCount) > 0 && Number(result.mediaInserted || 0) === 0;
 }
 
 export function shouldRetryTextInsertion(network, result, text) {
-  return network === "linkedin" && result?.composerOpened === true && Boolean(text) && result.textInserted !== true;
+  return result?.retryable !== false && network === "linkedin" && result?.composerOpened === true && Boolean(text) && result.textInserted !== true;
 }
+
+export function selectComposerFrame(frames = []) {
+  return frames.filter(frame => Number.isInteger(frame.frameId) && Number(frame.result) > 0)
+    .sort((a, b) => Number(b.result) - Number(a.result) || a.frameId - b.frameId)[0]?.frameId;
+}
+
+export const LINKEDIN_HANDOFF_STAGES = Object.freeze({
+  locate: "Waiting for LinkedIn’s post composer…",
+  inspect: "Checking LinkedIn’s existing draft…",
+  attach: "Attaching media to LinkedIn…", "process-media": "Waiting for LinkedIn to prepare the media…",
+  "verify-media": "Checking LinkedIn’s media previews…", "fill-text": "Inserting the LinkedIn post text…",
+  "verify-text": "Checking the LinkedIn post text…", verify: "Waiting for LinkedIn’s post to be ready…",
+  ready: "LinkedIn’s composer is ready for review."
+});
 
 export const COMPOSER_DELIVERY_TIMEOUT_MS = 20000;
 export const COMPOSER_DELIVERY_RETRY_MS = 750;

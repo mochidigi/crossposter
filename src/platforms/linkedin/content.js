@@ -3,15 +3,15 @@
   if (!core) return;
   const detectionBaselines = new Map();
   const linkedInVideoSourceCache = new Map();
-  let completedMediaSignature = "";
-  const COMPOSER_FIELD_SELECTOR = [
-    "[role='dialog'] [contenteditable='true'][role='textbox']",
-    "[role='dialog'] .ql-editor[contenteditable='true']",
-    "[role='dialog'] [contenteditable='true'][data-placeholder]",
-    "[role='dialog'] [contenteditable='true'][aria-label]"
-  ].join(", ");
+  // Find the dialog and then its editor. An ancestor CSS selector cannot
+  // cross shadow boundaries, even when queryAllDeep visits both roots.
+  const SHARE_DIALOG_SELECTOR = ".share-box-v2__modal, [data-test-modal-id='sharebox'] [role='dialog'], [role='dialog'][aria-labelledby='share-to-linkedin-modal__header']";
+  const EDITOR_SELECTOR = "[data-test-ql-editor-contenteditable='true'][contenteditable='true'], .ql-editor[contenteditable='true']";
+  const MEDIA_EDITOR_SELECTOR = ".media-detour__container, .media-editor__container";
+  const PREVIEW_SELECTOR = ".share-creation-state__preview-container";
   const COMPOSER_WAIT_MS = 30000;
-  const AUTO_OPEN_WAIT_MS = 15000;
+  const composerStates = new WeakMap();
+  let runningHandoff = null;
   const adapter = {
     id: "linkedin",
     matches: host => host.endsWith("linkedin.com"),
@@ -37,62 +37,19 @@
         : null;
     },
     ownsPage: ({ helpers }) => linkedInOwnsPage(helpers),
-    async openComposer({ handoff, files, helpers }) {
-      if (!location.hostname.endsWith("linkedin.com")) throw new Error("Open LinkedIn in this tab, then use the Crossposter sidebar.");
-      const selector = COMPOSER_FIELD_SELECTOR;
-      const mediaSignature = files.map(file => `${file.name}:${file.size}:${file.lastModified}`).join("|");
-      let field = helpers.findVisible(selector);
-      let mediaInserted = files.length && mediaSignature === completedMediaSignature ? files.length : 0;
-      const existingInput = files.length ? helpers.findCompatibleFileInput(files, document, true) : null;
-      if (!field && existingInput) {
-        mediaInserted = await finishMediaHandoff(existingInput, files, helpers, selector);
-        if (mediaInserted) completedMediaSignature = mediaSignature;
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), COMPOSER_WAIT_MS); }
-        catch {}
+    composerReadiness: ({ helpers }) => {
+      const composer = findShareDialog(helpers);
+      return composer ? (findEditor(composer, helpers) ? 3 : 2) : findStartPostLauncher(helpers) ? 1 : 0;
+    },
+    openComposer(context) {
+      const id = context.handoff.handoffId || "legacy";
+      if (runningHandoff) {
+        return runningHandoff.id === id ? runningHandoff.promise
+          : Promise.resolve({ ...context.helpers.manualResult("Another LinkedIn handoff is still running."), retryable: false });
       }
-      if (!field && composerAutoOpens()) {
-        // LinkedIn opens the share box itself several seconds after the tab
-        // reports "complete". Clicking the launcher in the meantime races its
-        // own open, so give the automatic one a chance first.
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), AUTO_OPEN_WAIT_MS); }
-        catch {}
-      }
-      if (!field) {
-        const launch = findStartPostLauncher(helpers);
-        if (!launch) return helpers.manualResult("Open LinkedIn’s post composer, then use the Crossposter sidebar.");
-        launch.click();
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), COMPOSER_WAIT_MS); }
-        catch { return helpers.manualResult("Open LinkedIn’s post composer, then use the Crossposter sidebar."); }
-      }
-      if (files.length && !mediaInserted) {
-        const composer = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
-        let input = helpers.findCompatibleFileInput(files, document, true);
-        if (!input) {
-          const addMedia = helpers.findIconControl?.(composer, ACTION_ICONS.addMedia, "button")
-            || helpers.findClickable("Add media", composer);
-          if (addMedia) {
-            addMedia.click();
-            try { input = await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, document, true), 20000); }
-            catch {}
-          }
-        }
-        if (input) {
-          mediaInserted = await finishMediaHandoff(input, files, helpers, selector);
-          if (mediaInserted) completedMediaSignature = mediaSignature;
-        }
-      }
-      if (files.length) {
-        field = null;
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), COMPOSER_WAIT_MS); }
-        catch {}
-      }
-      const textInserted = field
-        ? await helpers.pasteComposerText(field, handoff.text || "")
-        : false;
-      const errors = [];
-      if (handoff.text && !textInserted) errors.push("LinkedIn did not accept the post text.");
-      if (files.length && !mediaInserted) errors.push("LinkedIn did not finish attaching the media.");
-      return { ok: true, composerOpened: true, textInserted, mediaInserted, error: errors.join(" ") };
+      const promise = runHandoff(context).finally(() => { runningHandoff = null; });
+      runningHandoff = { id, promise };
+      return promise;
     },
     messages: {
       ARM_LINKEDIN_POST_DETECTION: ({ message, helpers }) => {
@@ -120,10 +77,6 @@
       || null;
   }
 
-  function composerAutoOpens() {
-    return /[?&]shareActive=true(?:&|$)/i.test(location.search || "");
-  }
-
   function findStartPostLauncher(helpers) {
     const usable = element => Boolean(element) && helpers.isVisible(element) && !helpers.closestDeep(element, "[role='dialog']");
     // Current feed: the share box pairs the viewer's avatar (a stable id) with
@@ -138,18 +91,224 @@
       .find(element => usable(element) && helpers.normalizeText(element).startsWith("start a post")) || null;
   }
 
-  function isTopFrame() {
-    try { return globalThis.top === globalThis.self; }
-    catch { return true; }
+  function linkedInOwnsPage(helpers) {
+    return Boolean(findShareDialog(helpers) || findStartPostLauncher(helpers));
   }
 
-  // LinkedIn loads a full-window "preload" iframe next to the document that
-  // renders the feed and the share composer. Only the document with that UI
-  // (or, before it renders, the top document) may answer composer messages.
-  function linkedInOwnsPage(helpers) {
-    if (helpers.findVisible(COMPOSER_FIELD_SELECTOR)) return true;
-    if (findStartPostLauncher(helpers)) return true;
-    return isTopFrame() && Boolean(helpers.findVisible("main, [role='main']"));
+  function usable(element, helpers) {
+    return Boolean(element && element.isConnected !== false && helpers.isVisible(element)
+      && !element.disabled && element.getAttribute?.("aria-disabled") !== "true"
+      && !helpers.closestDeep(element, "[aria-hidden='true'], [inert]"));
+  }
+
+  function findShareDialog(helpers) {
+    const dialogs = helpers.queryAllDeep(SHARE_DIALOG_SELECTOR).filter(element => usable(element, helpers));
+    return dialogs.length === 1 ? dialogs[0] : null;
+  }
+
+  function findEditor(composer, helpers) {
+    return composer && helpers.queryAllDeep(EDITOR_SELECTOR, composer).find(element => usable(element, helpers)) || null;
+  }
+
+  function normalizeComposerText(value) {
+    return String(value || "").replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ").replace(/[\u200b\ufeff]/g, "").trim();
+  }
+
+  function editorText(editor) {
+    // Quill renders newlines as paragraphs; innerText alone doubles them.
+    if (!editor) return "";
+    const blocks = [...(editor.children || [])];
+    const value = blocks.length ? blocks.map(block => {
+      if (block.childNodes?.length === 1 && block.firstChild?.nodeName === "BR") return "";
+      return String(block.innerText ?? block.textContent ?? "").replace(/\n$/, "");
+    }).join("\n") : editor.innerText ?? editor.textContent ?? "";
+    return normalizeComposerText(value);
+  }
+
+  function mediaPreviewCount(composer, helpers, video) {
+    if (!composer) return 0;
+    const preview = helpers.queryAllDeep(PREVIEW_SELECTOR, composer)[0];
+    if (!preview) return 0;
+    const count = helpers.queryAllDeep(video ? "video, .update-components-video" : ".update-components-image__image, .share-images__image", preview)
+      // LinkedIn marks decorative image wrappers aria-hidden even though the
+      // preview is visibly rendered. That is not a hidden upload.
+      .filter(element => element.isConnected !== false && helpers.isVisible(element)).length;
+    if (video) return count ? 1 : 0;
+    // The post preview displays four images and a +N overlay for larger sets.
+    const overflow = helpers.findVisible(".update-components-image__excess-image-count-text", preview);
+    const extra = String(overflow?.textContent || "").match(/^\s*\+\s*(\d+)\s*$/)?.[1];
+    return count + (count && extra ? Number(extra) : 0);
+  }
+
+  async function runHandoff({ handoff, files, helpers }) {
+    const started = Date.now(), stages = [];
+    let stage = "locate", composer = null, textInserted = false, mediaInserted = 0;
+    let releaseFilePickerGuard = () => {};
+    const report = name => {
+      stage = name;
+      stages.push({ stage, elapsedMs: Date.now() - started });
+      helpers.reportComposerStage?.(handoff.handoffId, "linkedin", stage);
+    };
+    const result = error => ({ ok: true, composerOpened: Boolean(composer), textInserted, mediaInserted,
+      stage, stages, retryable: false, error });
+    const wait = (check, timeout = COMPOSER_WAIT_MS, stableMs = 0) => {
+      let previous = null, since = 0;
+      return helpers.waitForElement(() => {
+        const value = check();
+        if (!value) { previous = null; since = 0; return null; }
+        if (value !== previous) { previous = value; since = Date.now(); }
+        return Date.now() - since >= stableMs ? value : null;
+      }, timeout);
+    };
+    try {
+      report("locate");
+      // The destination tab opens the feed with ?shareActive=true, so LinkedIn
+      // opens the share box itself; this adapter never clicks the launcher.
+      // LinkedIn mounts a placeholder share dialog first and replaces the node
+      // about half a second later. Only a dialog that already renders its
+      // editor or media editor is the composer; anchoring to the placeholder
+      // reads as "composer closed" once it is swapped out.
+      composer = await wait(() => {
+        const dialog = findShareDialog(helpers);
+        return dialog && (findEditor(dialog, helpers) || helpers.findVisible(MEDIA_EDITOR_SELECTOR, dialog)) ? dialog : null;
+      }, COMPOSER_WAIT_MS, 250);
+      report("inspect");
+      const anchor = helpers.closestDeep(composer, "[data-test-modal-id='sharebox']") || composer;
+      const current = () => {
+        // Reacquire replaced editors without switching to another post after
+        // the user closes the composer that this handoff belongs to.
+        if (anchor.isConnected === false || !usable(anchor, helpers)) throw new Error("The LinkedIn composer was closed. Open a new composer to try again.");
+        const dialog = findShareDialog(helpers);
+        const nativeError = dialog && helpers.findVisible(".media-editor-file-selector__container-error .artdeco-empty-state__message, .artdeco-inline-feedback--error", dialog);
+        if (nativeError) throw new Error(`LinkedIn: ${String(nativeError.innerText || nativeError.textContent || "The media was rejected.").trim()}`);
+        return dialog && (dialog === anchor || helpers.closestDeep(dialog, "[data-test-modal-id='sharebox']") === anchor) ? dialog : null;
+      };
+      let state = composerStates.get(anchor);
+      const id = handoff.handoffId || "legacy";
+      if (!state || state.id !== id) {
+        state = { id, mediaStarted: false, mediaComplete: false };
+      }
+      const expected = normalizeComposerText(handoff.text);
+      const existingEditor = findEditor(current(), helpers);
+      if (expected && editorText(existingEditor) && editorText(existingEditor) !== expected) {
+        throw new Error("The LinkedIn composer already contains different text. Your existing text was preserved.");
+      }
+      const video = files.some(file => file.type.startsWith("video/"));
+      if (files.some(file => !file.type.startsWith(video ? "video/" : "image/")) || (video && files.length > 1)) {
+        throw new Error("LinkedIn needs images or a single video. Attach this selection manually.");
+      }
+      if (files.length) {
+        if (state.mediaComplete && mediaPreviewCount(current(), helpers, video) >= files.length) mediaInserted = files.length;
+        else {
+          report("attach");
+          if (!state.mediaStarted) {
+            if (mediaPreviewCount(current(), helpers, false) || mediaPreviewCount(current(), helpers, true)) {
+              throw new Error("This LinkedIn composer already has media. Review it before attaching more.");
+            }
+            // LinkedIn clicks its new file input automatically after Add media.
+            // With a live user activation that opens an OS chooser, even though
+            // we supply File objects ourselves. Cancel only that synthetic
+            // default action, scoped to this composer and this opening step.
+            const preventAutomaticPicker = event => {
+              if (!event.isTrusted && event.composedPath().some(node => node.matches?.("input[type='file']"))) event.preventDefault();
+            };
+            anchor.addEventListener("click", preventAutomaticPicker, true);
+            releaseFilePickerGuard = () => anchor.removeEventListener("click", preventAutomaticPicker, true);
+            let mediaEditor = helpers.findVisible(MEDIA_EDITOR_SELECTOR, current());
+            if (mediaEditor && helpers.queryAllDeep(".media-editor-file-manager__file-preview", mediaEditor).length) {
+              throw new Error("LinkedIn’s media editor already contains files. Review them before attaching more.");
+            }
+            if (!mediaEditor) {
+              const button = helpers.findIconControl(current(), ACTION_ICONS.addMedia, "button");
+              if (!usable(button, helpers)) throw new Error("LinkedIn’s Add media control is not available.");
+              button.click();
+              mediaEditor = await wait(() => {
+                const dialog = current();
+                return dialog && helpers.findVisible(MEDIA_EDITOR_SELECTOR, dialog);
+              });
+            }
+            const input = await wait(() => {
+              const dialog = current();
+              const mediaRoot = dialog && helpers.findVisible(MEDIA_EDITOR_SELECTOR, dialog);
+              return mediaRoot && helpers.findCompatibleFileInput(files, mediaRoot, false);
+            });
+            if ((!input.multiple && files.length > 1) || (Number(input.getAttribute?.("filecountlimit")) > 0 && files.length > Number(input.getAttribute("filecountlimit")))) {
+              throw new Error("The LinkedIn media picker cannot accept this many files.");
+            }
+            composerStates.set(anchor, state);
+            state.mediaStarted = true;
+            helpers.attachFilesToInput(files, input);
+            releaseFilePickerGuard();
+          }
+          report("process-media");
+          // On a repeated request, observe the same upload instead of sending
+          // the files again. Only the media detour's Next button is actionable.
+          const next = await wait(() => {
+            const dialog = current();
+            if (!dialog) return null;
+            const mediaRoot = helpers.findVisible(MEDIA_EDITOR_SELECTOR, dialog);
+            if (!mediaRoot) return findEditor(dialog, helpers) && mediaPreviewCount(dialog, helpers, video) >= files.length ? "attached" : null;
+            // The file manager is collapsed for a single video. Its file
+            // entries still establish the count; Next must be visibly usable.
+            const previews = helpers.queryAllDeep(".media-editor-file-manager__file-preview", mediaRoot);
+            const button = helpers.queryAllDeep(".media-detour__container .share-box-footer__primary-btn", dialog).find(e => usable(e, helpers));
+            return previews.length >= files.length && button ? button : null;
+          }, 120000, 350);
+          if (next !== "attached") next.click();
+          report("verify-media");
+          await wait(() => {
+            const dialog = current();
+            return dialog && findEditor(dialog, helpers) && mediaPreviewCount(dialog, helpers, video) >= files.length ? dialog : null;
+          }, 120000, 600);
+          state.mediaComplete = true;
+          mediaInserted = files.length;
+        }
+      }
+      report("fill-text");
+      const editor = await wait(() => findEditor(current(), helpers), COMPOSER_WAIT_MS, 250);
+      if (editorText(editor) && editorText(editor) !== expected && expected) {
+        throw new Error("The LinkedIn composer already contains different text. Your existing text was preserved.");
+      }
+      if (expected && !editorText(editor)) {
+        // LinkedIn's shadow-root Quill can ignore synthetic paste. Use native
+        // editing with a shadow-local selection, never direct DOM replacement.
+        editor.focus();
+        const root = editor.getRootNode();
+        const selection = root.getSelection?.() || editor.ownerDocument.defaultView.getSelection();
+        const range = editor.ownerDocument.createRange();
+        range.selectNodeContents(editor);
+        selection.removeAllRanges(); selection.addRange(range);
+        if (editor.isConnected === false) throw new Error("LinkedIn replaced the editor before text could be inserted.");
+        editor.ownerDocument.execCommand("insertText", false, handoff.text);
+      }
+      report("verify-text");
+      if (expected) await wait(() => {
+        const liveEditor = findEditor(current(), helpers);
+        return liveEditor && editorText(liveEditor) === expected ? liveEditor : null;
+      }, 10000, 750);
+      textInserted = true;
+      report("verify");
+      await wait(() => {
+        const dialog = current();
+        if (!dialog || (expected && editorText(findEditor(dialog, helpers)) !== expected)) return null;
+        if (files.length && mediaPreviewCount(dialog, helpers, video) < files.length) return null;
+        const post = helpers.queryAllDeep(".share-actions__primary-action", dialog).find(e => usable(e, helpers));
+        return (!expected && !files.length) || post ? dialog : null;
+      }, 120000, 750);
+      report("ready");
+      return result("");
+    } catch (error) {
+      const messages = {
+        locate: "LinkedIn’s post composer did not open. Check that you are logged in, then try again.",
+        attach: "LinkedIn’s media picker did not become ready.", "process-media": "LinkedIn has not finished preparing the media. Check its media editor before trying again.",
+        "verify-media": "The expected media previews did not appear in the LinkedIn post.",
+        "fill-text": "LinkedIn’s text editor did not become ready.", "verify-text": "LinkedIn did not retain the expected post text.",
+        verify: "LinkedIn has not finished preparing the post. Review the text and attachments."
+      };
+      return result(error.message === "The native composer did not appear." ? messages[stage] : error.message);
+    } finally {
+      releaseFilePickerGuard();
+    }
   }
 
   function linkedInVideoInfo({ post, video, helpers }) {
@@ -363,26 +522,4 @@
     } finally { detectionBaselines.delete(requestId); }
   }
 
-  async function finishMediaHandoff(input, files, helpers, composerSelector) {
-    const inserted = helpers.attachFilesToInput(files, input);
-    if (!inserted) return 0;
-    let next;
-    try {
-      // The media editor's footer keeps a stable primary-button class; the
-      // "Next" label is localized, so it is only the fallback.
-      const inDialog = element => Boolean(helpers.closestDeep(element, "[role='dialog'], dialog"));
-      const findNext = () => helpers.queryAllDeep?.(".share-box-footer__primary-btn")
-        ?.find(element => helpers.isVisible(element) && !element.disabled && inDialog(element))
-        || helpers.findClickable("Next", document, inDialog);
-      next = await helpers.waitForElement(findNext, 30000);
-    } catch { return 0; }
-    next.click();
-    try {
-      await helpers.waitForElement(() => {
-        const nextFinished = !next.isConnected || !helpers.isVisible(next);
-        return nextFinished ? helpers.findVisible(composerSelector) : null;
-      }, 20000);
-    } catch { return 0; }
-    return inserted;
-  }
 })();

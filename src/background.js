@@ -1,8 +1,9 @@
 import { ext } from "./shared/browser.js";
+import { LINKEDIN_HANDOFF_STAGES } from "./shared/handoff.js";
 import { createDraft } from "./shared/draft.js";
 import { resolveReshareMedia } from "./shared/downloaders.js";
 import { nativeDestination } from "./shared/destinations.js";
-import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion } from "./shared/handoff.js";
+import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { clearHandoffMedia, readHandoffMediaChunk } from "./shared/media-store.js";
 import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, platformOriginsForIds, registeredPlatformContentScripts } from "./shared/content-scripts.js";
@@ -242,6 +243,7 @@ async function reinjectContentScripts(tabId, frameId) {
 // renders the platform UI answers. Keep asking until one does: the tab reports
 // "complete" before that frame's content script (or the UI itself) exists.
 async function sendComposerMessage(tabId, message) {
+  if (message.network === "linkedin") return sendLinkedInComposerMessage(tabId, message);
   const deadline = Date.now() + COMPOSER_DELIVERY_TIMEOUT_MS;
   let reinjected = false;
   let reinjectionError = null;
@@ -270,6 +272,47 @@ async function sendComposerMessage(tabId, message) {
   // the user gets its manual-fallback guidance instead of a silent timeout.
   try { return await ext.tabs.sendMessage(tabId, { ...message, force: true }, { frameId: 0 }); }
   catch (error) { throw reinjectionError || error; }
+}
+
+async function sendLinkedInComposerMessage(tabId, message) {
+  const started = Date.now(), deadline = started + 45000;
+  let reinjected = false;
+  let discoveryError = null;
+  while (Date.now() < deadline) {
+    // Probe all frames without performing any mutations. Only the selected
+    // frame receives the handoff, so a preload document cannot race its reply.
+    let frames = [];
+    try {
+      frames = await ext.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => globalThis.CrossposterContent?.composerReadiness?.("linkedin") || 0
+      });
+      discoveryError = null;
+    } catch (error) {
+      // An SPA can remove/navigate a frame during the read-only probe. It is
+      // safe to repeat discovery, but never an upload after dispatch.
+      discoveryError = error;
+      await ext.tabs.get(tabId); // Stop immediately if the user closed the tab.
+    }
+    const frameId = selectComposerFrame(frames);
+    if (Number.isInteger(frameId)) {
+      // Once dispatched, never broadcast or redeliver on a lost response:
+      // media may already be uploading in this frame.
+      const discoveryMs = Date.now() - started;
+      const result = await ext.tabs.sendMessage(tabId, message, { frameId });
+      return result && { ...result, frameId, discoveryMs };
+    }
+    if (!reinjected) {
+      reinjected = true;
+      try { await reinjectContentScripts(tabId); }
+      catch (error) { discoveryError = error; }
+    }
+    await delay(COMPOSER_DELIVERY_RETRY_MS);
+  }
+  return { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0,
+    stage: "locate", retryable: false, error: discoveryError
+      ? `LinkedIn’s composer could not be accessed: ${discoveryError.message || discoveryError}`
+      : "LinkedIn’s post composer or Start a post control did not appear. Check that you are logged in, then open its post composer." };
 }
 
 async function readPlatformPreferences() {
@@ -361,6 +404,11 @@ async function broadcastInlineActionPreference(enabled) {
 }
 
 ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "NATIVE_COMPOSER_STAGE") {
+    updateComposerStage(message, sender.tab?.id).then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (message?.type === "GET_PLATFORM_PREFERENCES") {
     readPlatformPreferences().then(preferences => sendResponse({ ok: true, ...preferences })).catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
@@ -982,6 +1030,17 @@ function notifyTray() {
   } catch {}
 }
 
+async function updateComposerStage(message, tabId) {
+  await backgroundStateReady;
+  const session = sessionForTab([...crosspostSessions.values()], tabId);
+  if (message.network !== "linkedin" || !Object.hasOwn(LINKEDIN_HANDOFF_STAGES, message.stage)
+    || session?.handoff?.state !== "filling" || session.handoff.attemptId !== message.handoffId
+    || session.handoff.destinationTabs?.linkedin !== tabId) return;
+  session.handoff.composerProgress = { network: "linkedin", stage: message.stage };
+  session.updatedAt = Date.now();
+  await persistCrosspostSessions(); notifyTray();
+}
+
 async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourceWindowId, sourceTabId) {
   if (!handoff || typeof handoff.text !== "string" || !Array.isArray(handoff.media)) throw new Error("The native handoff is incomplete.");
   const session = await requireCrosspostSession(sessionId, sourceTabId);
@@ -1019,13 +1078,15 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
   for (const entry of entries) {
     if (!isCurrentHandoff(session.id, attemptId)) break;
     const { target, tab, error } = entry;
-    session.handoff = { ...session.handoff, currentNetwork: target.id, results: [...results], tabGroupId, groupError };
+    session.handoff = { ...session.handoff, currentNetwork: target.id,
+      composerProgress: target.id === "linkedin" ? { network: "linkedin", stage: "locate" } : null,
+      results: [...results], tabGroupId, groupError };
     session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
     if (error) {
       results.push({ network: target.id, error, result: null });
       continue;
     }
-    try { results.push({ network: target.id, ...await fillNativeComposer(target, tab, handoff) }); }
+    try { results.push({ network: target.id, ...await fillNativeComposer(target, tab, { ...handoff, handoffId: attemptId }) }); }
     catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       results.push({ network: target.id, tabId: tab.id, error: message, result: null });
@@ -1103,7 +1164,7 @@ async function fillNativeComposer(target, initialTab, handoff) {
     catch (error) { result = { ok: true, composerOpened: true, textInserted: firstResult.textInserted, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
   }
   if (!result?.ok) result = { ...result, textInserted: false, mediaInserted: 0 };
-  return { tabId: tab.id, result };
+  return { tabId: tab.id, result, ...(result?.error ? { error: result.error } : {}) };
 }
 
 function queueSidePanelOptions(options) {
@@ -1365,5 +1426,7 @@ function waitForTab(tabId, currentStatus, label) {
       error ? reject(error) : resolve();
     }
     ext.tabs.onUpdated.addListener(listener);
+    // The load can complete between tabs.update's snapshot and registration.
+    ext.tabs.get(tabId).then(tab => { if (tab.status === "complete") finish(); }).catch(finish);
   });
 }
