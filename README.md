@@ -11,10 +11,9 @@ Upscrolled, LinkedIn, X, Bluesky, Instagram, Threads, and Facebook.
 
 ## Why this repo exists
 
-Crossposter is distributed outside the public store listings (unlisted), so
-there is no store page to inspect. This repo is the audit trail: the exact
-source for every signed build, plus the scripts to reproduce those builds
-byte-for-byte.
+Store listings show you a packaged build, not the code behind it. This repo
+is the audit trail: the exact source for every released build, plus the
+scripts to reproduce those builds byte-for-byte.
 
 Day-to-day development happens in a separate private repository; this mirror
 receives a snapshot at every release, committed by CI.

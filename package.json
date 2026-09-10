@@ -10,7 +10,6 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "build-for-amo": "node scripts/build.mjs && node scripts/listed-manifest.mjs",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "package": "node scripts/package.mjs"
   }
