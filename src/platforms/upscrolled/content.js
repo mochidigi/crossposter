@@ -6,7 +6,7 @@
     matches: host => host.endsWith("upscrolled.com"),
     postSelectors: ["article", "[role='article']"],
     prepareCapture: ({ post, helpers }) => expandUpscrolledText(post, helpers),
-    captureText: ({ post }) => upscrolledCaptureText(post),
+    captureText: ({ post, helpers }) => upscrolledCaptureText(post, helpers),
     captureMedia: ({ post, helpers }) => {
       const video = upscrolledVideoDetails(post, helpers);
       return video.url
@@ -47,6 +47,8 @@
         return null;
       };
       const findLauncher = () => helpers.findClickable("Post", document, element => !element.closest("[role='dialog'], dialog"));
+      const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "upscrolled", stage);
+      report("locate");
       let caption = findCaption(), textInserted = false, mediaInserted = 0, error = "";
       try {
         if (!caption) {
@@ -54,6 +56,7 @@
           // rendered its navigation, so the launcher may still be on its way.
           const launch = await helpers.waitForElement(findLauncher, LAUNCHER_WAIT_MS)
             .catch(() => { throw new Error("Open UpScrolled's composer, then use the Crossposter sidebar."); });
+          report("open");
           launch.click();
           const chooser = await helpers.waitForElement(() => helpers.findDialogWithText("Create a post"));
           const choice = files.some(file => file.type.startsWith("video/")) ? "Video post" : files.length ? "Photo post" : "Text post";
@@ -62,8 +65,10 @@
           choiceButton.click();
           caption = await helpers.waitForElement(findCaption);
         }
+        report("fill-text");
         textInserted = helpers.setComposerText(caption, handoff.text || "");
         if (files.length) {
+          report("attach");
           // The upload input mounts after the dialog's caption field, so wait
           // for it instead of attaching into a not-yet-rendered form.
           const root = caption.closest("[role='dialog'], dialog") || document;
@@ -123,7 +128,10 @@
       } catch (caught) {
         error = caught instanceof Error ? caught.message : "Use the Crossposter sidebar to finish the handoff.";
       }
-      return { ok: true, composerOpened: Boolean(caption), textInserted, mediaInserted, error };
+      if (!error && caption) report("ready");
+      // Without a caption field the composer was never reached; that is the
+      // locate failure the sidebar explains as a possible site change.
+      return { ok: true, composerOpened: Boolean(caption), textInserted, mediaInserted, error, ...(caption ? {} : { stage: "locate" }) };
     }
   });
 
@@ -148,8 +156,8 @@
       .find(image => helpers.isVisible(image) && /^(?:blob|data):/i.test(image.currentSrc || image.src || "")) || null;
   }
 
-  function upscrolledCaptureText(post) {
-    return [...post.querySelectorAll("p")].map(textWithoutExpansionControls).find(Boolean) || "";
+  function upscrolledCaptureText(post, helpers) {
+    return [...post.querySelectorAll("p")].map(element => textWithoutExpansionControls(element, helpers)).find(Boolean) || "";
   }
 
   function upscrolledVideoDetails(post, helpers, knownVideo) {
@@ -178,15 +186,17 @@
     ).catch(() => {});
   }
 
-  function textWithoutExpansionControls(element) {
-    const clone = element.cloneNode(true);
-    clone.querySelectorAll("button, [role='button']").forEach(control => control.remove());
-    clone.querySelectorAll("a").forEach(link => {
-      const label = (link.innerText || link.textContent || link.getAttribute?.("aria-label") || "")
+  // Buttons and "Show more" links are left out of the captured text; ordinary
+  // links stay. Reads the live paragraph so line breaks survive (a detached
+  // clone's innerText has no layout and collapses them).
+  function textWithoutExpansionControls(element, helpers) {
+    if (typeof helpers?.textWithout !== "function") return (element.innerText || element.textContent || "").trim();
+    return helpers.textWithout(element, "button, [role='button'], a", node => {
+      if (String(node.tagName || "").toUpperCase() !== "A") return true;
+      const label = (node.innerText || node.textContent || node.getAttribute?.("aria-label") || "")
         .replace(/\s+/g, " ")
         .trim();
-      if (/^(?:show|see) (?:more|less)$/iu.test(label)) link.remove();
+      return /^(?:show|see) (?:more|less)$/iu.test(label);
     });
-    return (clone.innerText || clone.textContent || "").trim();
   }
 })();

@@ -18,6 +18,7 @@ main { padding: 14px; }
 .session-close { display: grid; width: 30px; padding: 0; place-items: center; border: 0; border-left: 1px solid #aaa; color: #111; background: transparent; cursor: pointer; font: inherit; font-size: 17px; }
 .session-close:hover { color: #fff; background: #111; }
 .status { margin: 0 0 16px; padding-left: 9px; border-left: 2px solid #111; color: #444; }
+.status.error { border-left-color: #b3261e; color: #7a1a13; }
 .targets { display: flex; flex-wrap: wrap; gap: 5px; margin: -5px 0 14px; }
 .target { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid #111; color: #111; background: #fff; cursor: pointer; font: inherit; font-size: 10px; font-weight: 700; }
 .target:hover:not(:disabled), .target:focus-visible { color: #fff; background: #111; }

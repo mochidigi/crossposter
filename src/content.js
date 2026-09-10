@@ -53,12 +53,10 @@
     const adapter = currentAdapter();
     let rawText = adapter?.captureText?.({ post, helpers });
     if (rawText == null) {
-      // Cloning a post can construct custom media elements (for example
-      // UpScrolled's mux-player). Only make the generic cleanup clone when an
-      // adapter has not already extracted its text from a safe, focused copy.
-      const clone = post.cloneNode(true);
-      clone.querySelectorAll("button, nav, [aria-hidden='true'], script, style").forEach(node => node.remove());
-      rawText = clone.innerText ?? clone.textContent ?? "";
+      // Read the live post rather than a clone: cloning can construct custom
+      // media elements (for example UpScrolled's mux-player), and a detached
+      // clone's innerText loses every line break (see textWithout).
+      rawText = textWithout(post, "button, nav, [aria-hidden='true'], script, style");
     }
     const media = adapter?.captureMedia?.({ post, helpers }) ?? mediaFromNodes(post.querySelectorAll("img, video"));
     return {
@@ -340,6 +338,10 @@
   }
 
   function manualResult(error) { return { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error }; }
+  // The adapter could not find (or open) the native composer at all. The
+  // stage lets the sidebar tell a missing composer apart from a failed fill
+  // and add the "the site may have changed" guidance.
+  function composerNotFound(error) { return { ...manualResult(error), stage: "locate" }; }
   function queryAllDeep(selector, root = document) {
     const matches = [], roots = [root], visited = new Set();
     while (roots.length) {
@@ -417,12 +419,31 @@
   }
 
   // Visible text of an element with the matching descendants (e.g. "… more"
-  // expanders whose label changes per language) removed first.
-  function textWithout(element, selector) {
+  // expanders whose label changes per language) left out. The text is read
+  // from the live element: innerText only turns <br>s and block boundaries
+  // into line breaks on rendered nodes, and a detached clone has no layout,
+  // so its innerText degrades to textContent and the paragraphs run together
+  // ("Los AngelesFREE / RSVP"). The unwanted descendants are hidden for the
+  // duration of the read (innerText skips display:none subtrees) and their
+  // inline display is restored before the page paints again.
+  function textWithout(element, selector, shouldDrop = () => true) {
     if (!element) return "";
-    const clone = element.cloneNode(true);
-    if (selector) clone.querySelectorAll?.(selector).forEach(node => node.remove());
-    return String(clone.innerText ?? clone.textContent ?? "").trim();
+    const hidden = [];
+    try {
+      if (selector) {
+        for (const node of element.querySelectorAll?.(selector) || []) {
+          if (typeof node?.style?.setProperty !== "function" || !shouldDrop(node)) continue;
+          hidden.push([node, node.style.getPropertyValue("display"), node.style.getPropertyPriority("display")]);
+          node.style.setProperty("display", "none", "important");
+        }
+      }
+      return String(element.innerText ?? element.textContent ?? "").trim();
+    } finally {
+      for (const [node, value, priority] of hidden) {
+        if (value) node.style.setProperty("display", value, priority);
+        else node.style.removeProperty("display");
+      }
+    }
   }
 
   function findClickable(text, root = document, filter = () => true, exact = true) {
@@ -602,6 +623,43 @@
     return composerHasText(element);
   }
 
+  // Insert a caption at most once per composer, with exactly one insertion
+  // method per attempt. The background can deliver the same handoff to this
+  // frame again (media retries, redelivery after a lost response), and the
+  // controlled editors on Facebook, Instagram and Threads (Lexical) may keep
+  // reporting an empty DOM for a while after accepting text — through
+  // Firefox's Xray wrappers in particular — so "is the editor empty?" is not
+  // a safe guard on its own. A verified paste followed by an insertText
+  // fallback is how captions were duplicated; here the fallback never runs.
+  // `root` is the composer container (dialog or popover) that outlives editor
+  // re-renders; the memo falls back to the field itself.
+  const insertedComposerText = new WeakMap();
+  async function fillComposerTextOnce(field, root, value, options = {}) {
+    if (!value) return true;
+    const key = root || field;
+    if (key && insertedComposerText.get(key) === value) return true;
+    if (!field || field.isConnected === false) return false;
+    if (composerHasText(field)) return true;
+    let inserted;
+    if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) {
+      // Plain fields take the value directly; nothing can be appended twice.
+      inserted = setComposerText(field, value);
+    } else if (globalThis.browser?.runtime) {
+      // Firefox: a content-script ClipboardEvent is not a dependable route
+      // into page editors, and the DOM read-back can lag, so use the one
+      // directly observable native insertion and trust it (see Threads).
+      inserted = insertComposerTextOnce(field, value);
+    } else if (options.method === "set") {
+      inserted = setComposerText(field, value);
+    } else {
+      // Chrome Lexical editors accept a synthetic paste; keep it the single
+      // attempt rather than verifying and falling back.
+      inserted = await pasteComposerText(field, value, { fallback: false });
+    }
+    if (inserted && key) insertedComposerText.set(key, value);
+    return inserted;
+  }
+
   function compatibleFiles(files) {
     const wantsVideo = files.some(file => file.type.startsWith("video/"));
     return files.filter(file => wantsVideo ? file.type.startsWith("video/") : file.type.startsWith("image/"));
@@ -709,9 +767,9 @@
 
   const helpers = Object.freeze({
     mediaFromNodes, identityFromHref, firstText, capturePost: capture,
-    manualResult, queryAllDeep, closestDeep, findVisible, normalizeText, isVisible, findDialogWithText, findClickable, waitForElement,
+    manualResult, composerNotFound, queryAllDeep, closestDeep, findVisible, normalizeText, isVisible, findDialogWithText, findClickable, waitForElement,
     svgOf, iconMatches, iconControls, findIconControl, textWithout,
-    setComposerText, insertComposerTextOnce, pasteComposerText, composerHasText,
+    setComposerText, insertComposerTextOnce, pasteComposerText, composerHasText, fillComposerTextOnce,
     attachNativeFiles, fillNativeComposer, findCompatibleFileInput, attachFilesToInput, reportComposerStage
   });
 

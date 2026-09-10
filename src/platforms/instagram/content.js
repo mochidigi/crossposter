@@ -137,17 +137,21 @@
     async openComposer({ handoff, files, helpers }) {
       if (!(location.hostname === "instagram.com" || location.hostname.endsWith(".instagram.com"))) throw new Error("Open Instagram in this tab, then use the Crossposter sidebar.");
       if (!files.length) return helpers.manualResult("Instagram requires a photo or video. Add media to this crosspost first.");
+      const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "instagram", stage);
       const fileInput = () => helpers.findVisible("[role='dialog']") && helpers.queryAllDeep("[role='dialog'] input[type='file']").find(input => !input.disabled) || null;
+      report("locate");
       let input = fileInput();
       if (!input) {
         const launch = helpers.findIconControl?.(document, ICONS.create, "a, [role='link'], [role='button'], button")
           || document.querySelector("svg[aria-label='New post'], svg[aria-label='Create']")?.closest("a, [role='link'], [role='button'], button")
           || helpers.findClickable("create", document, element => !element.closest("[role='dialog']"), false);
-        if (!launch) return helpers.manualResult("Open Instagram’s Create dialog, then use the Crossposter sidebar.");
+        if (!launch) return helpers.composerNotFound("Open Instagram’s Create dialog, then use the Crossposter sidebar.");
+        report("open");
         launch.click();
         try { input = await helpers.waitForElement(fileInput); }
-        catch { return helpers.manualResult("Open Instagram’s Create dialog, then use the Crossposter sidebar."); }
+        catch { return helpers.composerNotFound("Open Instagram’s Create dialog, then use the Crossposter sidebar."); }
       }
+      report("attach");
       const mediaInserted = helpers.attachFilesToInput(files, input);
       if (!mediaInserted) return { ok: true, composerOpened: true, textInserted: false, mediaInserted: 0, error: "Instagram did not accept the media. Use the Crossposter sidebar to finish the handoff." };
       // Advance through the crop/edit steps to the caption screen. Only "Next"
@@ -163,6 +167,7 @@
       // Instagram keeps one persistent "Next" button across the crop and edit
       // steps, so a state change can only be observed by pacing: click, give the
       // step transition time to render, then look again.
+      report("process-media");
       for (let step = 0; step < 6 && !captionField(); step++) {
         let advance = null;
         try {
@@ -179,7 +184,11 @@
       let field = captionField();
       if (!field) { try { field = await helpers.waitForElement(captionField, 8000); } catch {} }
       if (!field) return { ok: true, composerOpened: true, textInserted: false, mediaInserted, error: "Media attached. Continue to the caption step in Instagram, then use the Crossposter sidebar." };
-      const textInserted = caption ? await helpers.pasteComposerText(field, caption) : true;
+      // Instagram's caption field is a Lexical editor like Facebook's: insert
+      // the caption once per create dialog, with no verify-then-fallback pass.
+      report("fill-text");
+      const textInserted = await helpers.fillComposerTextOnce(field, dialog() || field, caption);
+      if (textInserted) report("ready");
       return { ok: true, composerOpened: true, textInserted, mediaInserted, error: textInserted ? "" : "Use the Crossposter sidebar to finish the handoff." };
     }
   });

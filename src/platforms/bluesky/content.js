@@ -73,20 +73,28 @@
     },
     async openComposer({ handoff, files, helpers }) {
       if (!(location.hostname === "bsky.app" || location.hostname.endsWith(".bsky.app"))) throw new Error("Open Bluesky in this tab, then use the Crossposter sidebar.");
+      const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "bluesky", stage);
       const selector = "textarea[placeholder*='What'], [data-testid='composePostTextArea'], [role='dialog'] textarea, [role='dialog'] [contenteditable='true']";
+      report("locate");
       let field = helpers.findVisible(selector);
       if (!field) {
         const launch = helpers.findVisible("[data-testid='composeFAB'], button[aria-label*='compose' i][aria-label*='post' i], a[href*='/intent/compose']")
           || helpers.findClickable("New post", document, element => !element.closest("[role='dialog']"), false);
-        if (!launch) return helpers.manualResult("Open Bluesky’s post composer, then use the Crossposter sidebar.");
+        if (!launch) return helpers.composerNotFound("Open Bluesky’s post composer, then use the Crossposter sidebar.");
+        report("open");
         launch.click();
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector)); }
-        catch { return helpers.manualResult("Open Bluesky’s post composer, then use the Crossposter sidebar."); }
+        catch { return helpers.composerNotFound("Open Bluesky’s post composer, then use the Crossposter sidebar."); }
       }
-      const textInserted = helpers.setComposerText(field, handoff.text || "");
+      report("fill-text");
+      // The composer text is inserted once per composer: the background
+      // re-sends the handoff when the media input was not ready in time, and
+      // that redelivery must not append the text a second time.
+      const root = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
+      const textInserted = await helpers.fillComposerTextOnce(field, root, handoff.text || "", { method: "set" });
       let mediaInserted = 0;
       if (files.length) {
-        const root = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
+        report("attach");
         let input = helpers.findCompatibleFileInput(files, root);
         if (!input) {
           // Bluesky does not mount its file input until this control is
@@ -104,6 +112,7 @@
       const errors = [];
       if (handoff.text && !textInserted) errors.push("Bluesky did not accept the post text.");
       if (files.length && !mediaInserted) errors.push("Bluesky did not expose its media upload control.");
+      if (!errors.length) report("ready");
       return { ok: true, composerOpened: true, textInserted, mediaInserted, error: errors.join(" ") };
     }
   });

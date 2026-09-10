@@ -65,24 +65,33 @@
     },
     async openComposer({ handoff, files, helpers }) {
       if (!(location.hostname === "facebook.com" || location.hostname.endsWith(".facebook.com"))) throw new Error("Open Facebook in this tab, then use the Crossposter sidebar.");
+      const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "facebook", stage);
       const selector = "[role='dialog'] [contenteditable='true'][role='textbox']";
+      report("locate");
       let field = helpers.findVisible(selector);
       if (!field) {
         const launch = composerLauncher(helpers);
-        if (!launch) return helpers.manualResult("Open Facebook’s Create post dialog, then use the Crossposter sidebar.");
+        if (!launch) return helpers.composerNotFound("Open Facebook’s Create post dialog, then use the Crossposter sidebar.");
+        report("open");
         launch.click();
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector)); }
-        catch { return helpers.manualResult("Open Facebook’s Create post dialog, then use the Crossposter sidebar."); }
+        catch { return helpers.composerNotFound("Open Facebook’s Create post dialog, then use the Crossposter sidebar."); }
       }
-      // Facebook's composer is a Lexical editor: paste insertion is reliable
-      // where execCommand-style writes are not.
-      const textInserted = await helpers.pasteComposerText(field, handoff.text || "");
+      report("fill-text");
+      // Facebook's composer is a Lexical editor: in Chrome a synthetic paste
+      // is the reliable route where execCommand-style writes are not, and in
+      // Firefox a single native insertText is. Either way the caption goes in
+      // exactly once per composer — a verified paste followed by an insertText
+      // fallback duplicated it when Lexical published its DOM late.
+      const root = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
+      const textInserted = await helpers.fillComposerTextOnce(field, root, handoff.text || "");
       let mediaInserted = 0;
       if (files.length) {
-        const root = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
+        report("attach");
         try { await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, false), 15000); } catch {}
         mediaInserted = helpers.attachNativeFiles(files, root);
       }
+      if (textInserted && (!files.length || mediaInserted)) report("ready");
       return { ok: true, composerOpened: true, textInserted, mediaInserted, error: textInserted ? "" : "Use the Crossposter sidebar to finish the handoff." };
     }
   });
@@ -104,7 +113,7 @@
     const message = facebookMessageElement(post, helpers);
     // Expanders ("See more" / "Visa mer") are buttons inside the message; drop
     // them by element so the trailing-label regex is only a fallback.
-    const raw = message && typeof helpers.textWithout === "function" && typeof message.cloneNode === "function"
+    const raw = message && typeof helpers.textWithout === "function"
       ? helpers.textWithout(message, "[role='button'], button")
       : message?.innerText || message?.textContent || "";
     const text = raw

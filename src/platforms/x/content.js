@@ -62,28 +62,37 @@
     },
     async openComposer({ handoff, files, helpers }) {
       if (!(location.hostname === "x.com" || location.hostname.endsWith("twitter.com"))) throw new Error("Open X in this tab, then use the Crossposter sidebar.");
+      const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "x", stage);
       const selector = "[data-testid='tweetTextarea_0'], [role='dialog'] [contenteditable='true'][role='textbox']";
+      report("locate");
       let field = helpers.findVisible(selector);
       if (!field) {
         const launch = helpers.findVisible("[data-testid='SideNav_NewTweet_Button'], a[href='/compose/post']");
-        if (!launch) return helpers.manualResult("Open X’s post composer, then use the Crossposter sidebar.");
+        if (!launch) return helpers.composerNotFound("Open X’s post composer, then use the Crossposter sidebar.");
+        report("open");
         launch.click();
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector), 20000); }
-        catch { return helpers.manualResult("Open X’s post composer, then use the Crossposter sidebar."); }
+        catch { return helpers.composerNotFound("Open X’s post composer, then use the Crossposter sidebar."); }
       }
+      report("fill-text");
       // X's composer is Draft.js. execCommand("insertText") mutates the DOM
       // and leaves Draft to reconcile the leaf under the caret with its model;
       // once its link decorator splits the text into several leaves that
       // reconcile truncates or repeats fragments ("t3.gg on X)t3.gg on X)").
       // A plain-text paste goes through Draft's own model instead.
       const textInserted = await helpers.pasteComposerText(field, handoff.text || "");
-      if (!files.length) return { ok: true, composerOpened: true, textInserted, mediaInserted: 0, error: "" };
+      if (!files.length) {
+        if (textInserted) report("ready");
+        return { ok: true, composerOpened: true, textInserted, mediaInserted: 0, error: "" };
+      }
+      report("attach");
       const root = field.closest("[role='dialog'], dialog") || document;
       let mediaInserted = 0;
       try {
         const input = await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, root === document), 20000);
         mediaInserted = helpers.attachFilesToInput(files, input);
       } catch {}
+      if (mediaInserted && textInserted) report("ready");
       return {
         ok: true, composerOpened: true, textInserted, mediaInserted,
         error: mediaInserted ? "" : "X is still loading its media control. Crossposter will retry once."

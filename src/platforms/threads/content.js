@@ -60,7 +60,6 @@
   // composer root is the nearest ancestor that holds the heading, the media
   // file input, and the footer buttons.
   const COMPOSER_FIELD = "[contenteditable='true'][role='textbox']";
-  const insertedTextByComposer = new WeakMap();
   function composerRoot(element, helpers) {
     const dialog = helpers.closestDeep(element, "[role='dialog'], dialog");
     if (dialog) return dialog;
@@ -165,40 +164,38 @@
     },
     async openComposer({ handoff, files, helpers }) {
       if (!isThreadsHost(location.hostname)) throw new Error("Open Threads in this tab, then use the Crossposter sidebar.");
+      const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "threads", stage);
       const selector = COMPOSER_FIELD;
       const findField = () => helpers.queryAllDeep(selector).find(element => helpers.isVisible(element) && composerRoot(element, helpers)) || null;
+      report("locate");
       let field = findField();
       if (!field) {
         const outsideDialog = element => !element.closest("[role='dialog'], dialog");
         const launch = helpers.findIconControl?.(document, ICONS.create, "[role='button'], a")
           || helpers.findClickable("New thread", document, outsideDialog)
           || helpers.findVisible("[role='button'][aria-label^='Empty text field']");
-        if (!launch) return helpers.manualResult("Open Threads’ New thread composer, then use the Crossposter sidebar.");
+        if (!launch) return helpers.composerNotFound("Open Threads’ New thread composer, then use the Crossposter sidebar.");
+        report("open");
         launch.click();
         try { field = await helpers.waitForElement(findField, 20000); }
-        catch { return helpers.manualResult("Open Threads’ New thread composer, then use the Crossposter sidebar."); }
+        catch { return helpers.composerNotFound("Open Threads’ New thread composer, then use the Crossposter sidebar."); }
       }
+      report("fill-text");
       // Threads can accept a synthetic paste before its contenteditable text
-      // becomes readable. Do not follow that successful paste with insertText,
-      // which would append a duplicate caption.
+      // becomes readable, and Firefox can report an empty editor after a
+      // delivered paste. The shared helper inserts the caption once per
+      // composer with a single method (paste in Chrome, insertText in
+      // Firefox) and never follows it with a fallback.
       const root = composerRoot(field, helpers) || document;
       const caption = String(handoff.text || "").slice(0, 500);
-      let textInserted = !caption || insertedTextByComposer.get(root) === caption;
-      if (!textInserted) {
-        // Firefox can deliver the synthetic paste to Threads while its Xray
-        // wrapper still reports an empty editor. pasteComposerText then runs
-        // its insertText fallback and duplicates the whole caption. Use one
-        // directly observable insertion method in Firefox.
-        textInserted = globalThis.browser?.runtime
-          ? helpers.insertComposerTextOnce(field, caption)
-          : await helpers.pasteComposerText(field, caption, { fallback: false });
-        if (textInserted) insertedTextByComposer.set(root, caption);
-      }
+      const textInserted = await helpers.fillComposerTextOnce(field, root, caption);
       let mediaInserted = 0;
       if (files.length) {
+        report("attach");
         try { await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, false), 15000); } catch {}
         mediaInserted = helpers.attachNativeFiles(files, root);
       }
+      if (textInserted && (!files.length || mediaInserted)) report("ready");
       return {
         ok: true, composerOpened: true, textInserted, mediaInserted,
         error: textInserted ? "" : "Use the Crossposter sidebar to finish the handoff."

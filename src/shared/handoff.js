@@ -29,14 +29,41 @@ export function selectComposerFrame(frames = []) {
     .sort((a, b) => Number(b.result) - Number(a.result) || a.frameId - b.frameId)[0]?.frameId;
 }
 
-export const LINKEDIN_HANDOFF_STAGES = Object.freeze({
-  locate: "Waiting for LinkedIn’s post composer…",
-  inspect: "Checking LinkedIn’s existing draft…",
-  attach: "Attaching media to LinkedIn…", "process-media": "Waiting for LinkedIn to prepare the media…",
-  "verify-media": "Checking LinkedIn’s media previews…", "fill-text": "Inserting the LinkedIn post text…",
-  "verify-text": "Checking the LinkedIn post text…", verify: "Waiting for LinkedIn’s post to be ready…",
-  ready: "LinkedIn’s composer is ready for review."
+// Progress reported by the content-script adapters while they drive a
+// native composer (helpers.reportComposerStage). The sidebar shows these as
+// the handoff status, so every network reports the same vocabulary.
+export const HANDOFF_STAGES = Object.freeze({
+  locate: label => `Looking for ${label}’s post composer…`,
+  open: label => `Opening ${label}’s post composer…`,
+  inspect: label => `Checking ${label}’s existing draft…`,
+  attach: label => `Attaching media to ${label}…`,
+  "process-media": label => `Waiting for ${label} to prepare the media…`,
+  "verify-media": label => `Checking ${label}’s media previews…`,
+  "fill-text": label => `Inserting the ${label} post text…`,
+  "verify-text": label => `Checking the ${label} post text…`,
+  verify: label => `Waiting for ${label}’s post to be ready…`,
+  ready: label => `${label}’s composer is ready for review.`
 });
+
+export function isHandoffStage(stage) {
+  return typeof stage === "string" && Object.hasOwn(HANDOFF_STAGES, stage);
+}
+
+export function handoffStageText(stage, label = "the destination") {
+  return isHandoffStage(stage) ? HANDOFF_STAGES[stage](label) : "";
+}
+
+// A handoff that ended at the locate stage without a composer is either a
+// page that never showed one (logged out, blocked) or a composer the adapter
+// no longer recognizes because the site changed its markup. The user can
+// tell those apart by looking at the page, so say so.
+export function composerNotFound(result) {
+  return Boolean(result) && result.composerOpened === false && result.stage === "locate";
+}
+
+export function composerNotFoundHint(label = "The site") {
+  return `If ${label}’s composer is already open on the page, ${label} has probably changed its layout and Crossposter needs an update — please report this.`;
+}
 
 export const COMPOSER_DELIVERY_TIMEOUT_MS = 20000;
 export const COMPOSER_DELIVERY_RETRY_MS = 750;

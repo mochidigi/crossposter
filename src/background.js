@@ -1,5 +1,5 @@
 import { ext } from "./shared/browser.js";
-import { LINKEDIN_HANDOFF_STAGES } from "./shared/handoff.js";
+import { isHandoffStage } from "./shared/handoff.js";
 import { createDraft } from "./shared/draft.js";
 import { resolveReshareMedia } from "./shared/downloaders.js";
 import { nativeDestination } from "./shared/destinations.js";
@@ -1033,10 +1033,12 @@ function notifyTray() {
 async function updateComposerStage(message, tabId) {
   await backgroundStateReady;
   const session = sessionForTab([...crosspostSessions.values()], tabId);
-  if (message.network !== "linkedin" || !Object.hasOwn(LINKEDIN_HANDOFF_STAGES, message.stage)
+  // Only the tab this handoff opened for that network may report progress,
+  // and only for the attempt that is still running.
+  if (!isHandoffStage(message.stage) || typeof message.network !== "string"
     || session?.handoff?.state !== "filling" || session.handoff.attemptId !== message.handoffId
-    || session.handoff.destinationTabs?.linkedin !== tabId) return;
-  session.handoff.composerProgress = { network: "linkedin", stage: message.stage };
+    || session.handoff.destinationTabs?.[message.network] !== tabId) return;
+  session.handoff.composerProgress = { network: message.network, stage: message.stage };
   session.updatedAt = Date.now();
   await persistCrosspostSessions(); notifyTray();
 }
@@ -1079,7 +1081,7 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
     if (!isCurrentHandoff(session.id, attemptId)) break;
     const { target, tab, error } = entry;
     session.handoff = { ...session.handoff, currentNetwork: target.id,
-      composerProgress: target.id === "linkedin" ? { network: "linkedin", stage: "locate" } : null,
+      composerProgress: { network: target.id, stage: "locate" },
       results: [...results], tabGroupId, groupError };
     session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
     if (error) {

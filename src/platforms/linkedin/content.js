@@ -5,10 +5,17 @@
   const linkedInVideoSourceCache = new Map();
   // Find the dialog and then its editor. An ancestor CSS selector cannot
   // cross shadow boundaries, even when queryAllDeep visits both roots.
-  const SHARE_DIALOG_SELECTOR = ".share-box-v2__modal, [data-test-modal-id='sharebox'] [role='dialog'], [role='dialog'][aria-labelledby='share-to-linkedin-modal__header']";
-  const EDITOR_SELECTOR = "[data-test-ql-editor-contenteditable='true'][contenteditable='true'], .ql-editor[contenteditable='true']";
+  // LinkedIn serves two share boxes: the classic Ember modal (Quill editor in
+  // a shadow root) and the SDUI one it is rolling out per account — a native
+  // <dialog> whose obfuscated class names change per build, rendering the
+  // "sharing.ShareCompose" screen with a Tiptap/ProseMirror editor keyed
+  // ShareBox_textEditor. Only the language-neutral attributes are matched.
+  const SDUI_DIALOG_SELECTOR = "dialog:has([data-sdui-screen*='sharing.ShareCompose']), dialog:has([componentkey='ShareBox_textEditor'])";
+  const SHARE_DIALOG_SELECTOR = `.share-box-v2__modal, [data-test-modal-id='sharebox'] [role='dialog'], [role='dialog'][aria-labelledby='share-to-linkedin-modal__header'], ${SDUI_DIALOG_SELECTOR}`;
+  const EDITOR_SELECTOR = "[data-test-ql-editor-contenteditable='true'][contenteditable='true'], .ql-editor[contenteditable='true'], [componentkey='ShareBox_textEditor'][contenteditable='true'], [data-testid='ui-core-tiptap-text-editor-wrapper'] [contenteditable='true'][role='textbox'], .ProseMirror[contenteditable='true']";
   const MEDIA_EDITOR_SELECTOR = ".media-detour__container, .media-editor__container";
-  const PREVIEW_SELECTOR = ".share-creation-state__preview-container";
+  const PREVIEW_SELECTOR = ".share-creation-state__preview-container, #ShareBoxpreviewCard";
+  const POST_BUTTON_SELECTOR = ".share-actions__primary-action";
   const COMPOSER_WAIT_MS = 30000;
   const composerStates = new WeakMap();
   let runningHandoff = null;
@@ -125,11 +132,38 @@
     return normalizeComposerText(value);
   }
 
+  function mediaRootOf(dialog, files, helpers) {
+    if (!dialog) return null;
+    const classic = helpers.findVisible(MEDIA_EDITOR_SELECTOR, dialog);
+    if (classic || !dialog.matches?.(SDUI_DIALOG_SELECTOR)) return classic;
+    // The SDUI share box has shown no media detour so far (its Media control
+    // is marked aria-haspopup="dialog"). Best effort until that flow has been
+    // observed: accept a compatible file input inside the share dialog or a
+    // sibling dialog, so a picker that is still mounting keeps the wait going.
+    const roots = [dialog, ...helpers.queryAllDeep("dialog[open], [role='dialog']").filter(element => element !== dialog && usable(element, helpers))];
+    return roots.find(root => helpers.findCompatibleFileInput(files, root, false)) || null;
+  }
+
+  function findPostButton(composer, helpers) {
+    if (!composer) return null;
+    const classic = helpers.queryAllDeep(POST_BUTTON_SELECTOR, composer).find(element => usable(element, helpers));
+    if (classic) return classic;
+    // SDUI: the footer's submit control is the dialog's only text-only
+    // <button>; every other button there carries an SVG icon. Its label is
+    // localized ("Post", "Publicera"), so the shape is the hook.
+    const icons = new Set(helpers.iconControls?.(composer, "button") || []);
+    const textButtons = helpers.queryAllDeep("button", composer)
+      .filter(button => !icons.has(button) && helpers.normalizeText(button) && usable(button, helpers)
+        && !helpers.closestDeep(button, "[contenteditable='true']"));
+    return textButtons[textButtons.length - 1] || null;
+  }
+
   function mediaPreviewCount(composer, helpers, video) {
     if (!composer) return 0;
     const preview = helpers.queryAllDeep(PREVIEW_SELECTOR, composer)[0];
     if (!preview) return 0;
-    const count = helpers.queryAllDeep(video ? "video, .update-components-video" : ".update-components-image__image, .share-images__image", preview)
+    const sdui = preview.id === "ShareBoxpreviewCard";
+    const count = helpers.queryAllDeep(sdui ? (video ? "video" : "img") : video ? "video, .update-components-video" : ".update-components-image__image, .share-images__image", preview)
       // LinkedIn marks decorative image wrappers aria-hidden even though the
       // preview is visibly rendered. That is not a hidden upload.
       .filter(element => element.isConnected !== false && helpers.isVisible(element)).length;
@@ -214,7 +248,7 @@
             };
             anchor.addEventListener("click", preventAutomaticPicker, true);
             releaseFilePickerGuard = () => anchor.removeEventListener("click", preventAutomaticPicker, true);
-            let mediaEditor = helpers.findVisible(MEDIA_EDITOR_SELECTOR, current());
+            let mediaEditor = mediaRootOf(current(), files, helpers);
             if (mediaEditor && helpers.queryAllDeep(".media-editor-file-manager__file-preview", mediaEditor).length) {
               throw new Error("LinkedIn’s media editor already contains files. Review them before attaching more.");
             }
@@ -222,14 +256,10 @@
               const button = helpers.findIconControl(current(), ACTION_ICONS.addMedia, "button");
               if (!usable(button, helpers)) throw new Error("LinkedIn’s Add media control is not available.");
               button.click();
-              mediaEditor = await wait(() => {
-                const dialog = current();
-                return dialog && helpers.findVisible(MEDIA_EDITOR_SELECTOR, dialog);
-              });
+              mediaEditor = await wait(() => mediaRootOf(current(), files, helpers));
             }
             const input = await wait(() => {
-              const dialog = current();
-              const mediaRoot = dialog && helpers.findVisible(MEDIA_EDITOR_SELECTOR, dialog);
+              const mediaRoot = mediaRootOf(current(), files, helpers);
               return mediaRoot && helpers.findCompatibleFileInput(files, mediaRoot, false);
             });
             if ((!input.multiple && files.length > 1) || (Number(input.getAttribute?.("filecountlimit")) > 0 && files.length > Number(input.getAttribute("filecountlimit")))) {
@@ -292,8 +322,7 @@
         const dialog = current();
         if (!dialog || (expected && editorText(findEditor(dialog, helpers)) !== expected)) return null;
         if (files.length && mediaPreviewCount(dialog, helpers, video) < files.length) return null;
-        const post = helpers.queryAllDeep(".share-actions__primary-action", dialog).find(e => usable(e, helpers));
-        return (!expected && !files.length) || post ? dialog : null;
+        return (!expected && !files.length) || findPostButton(dialog, helpers) ? dialog : null;
       }, 120000, 750);
       report("ready");
       return result("");
@@ -443,7 +472,7 @@
     if (!textElement) return "";
     const collapsed = helpers.queryAllDeep("[data-testid='expandable-text-button']", textElement).length > 0;
     // Drop the "… more" expander by element rather than by its localized label.
-    const text = typeof helpers.textWithout === "function" && typeof textElement.cloneNode === "function"
+    const text = typeof helpers.textWithout === "function"
       ? helpers.textWithout(textElement, "[data-testid='expandable-text-button']")
       : textElement.innerText || textElement.textContent || "";
     return (collapsed ? text.replace(/\s*(?:…|\.\.\.)\s*more\s*$/iu, "").replace(/\s*(?:…|\.\.\.)\s*$/u, "") : text).trim();

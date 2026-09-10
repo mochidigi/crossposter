@@ -26,17 +26,24 @@ export function registerSourceNetwork(network) {
   else sourceNetworks.push(network);
 }
 
-export function appendAttribution(text, sourceAuthor, sourceNetwork, maxLength = 3000, sourceIsOwn = false) {
+// Leads with the original poster ("Name on X: text") so the credit is
+// visible before any truncation or "see more" fold. Drafts written by the
+// earlier build carried the credit as a trailing "(via Name on X)"; those are
+// still recognized so a reloaded draft is never credited twice.
+export function addAttribution(text, sourceAuthor, sourceNetwork, maxLength = 3000, sourceIsOwn = false) {
   const body = String(text || "").trim();
   const author = String(sourceAuthor || "").replace(/\s+/g, " ").trim();
   if (!body || !author) return body.slice(0, maxLength);
   const platform = PLATFORM_LABELS[sourceNetwork] || sourceNetworks.find(network => network.id === sourceNetwork)?.label || PLATFORM_LABELS.web;
-  const attribution = `(via ${author} on ${platform})`;
-  if (sourceIsOwn) return (body.endsWith(attribution) ? body.slice(0, -attribution.length).trimEnd() : body).slice(0, maxLength);
-  if (body.endsWith(attribution)) return body.slice(0, maxLength);
-  const separator = "\n\n";
-  const available = Math.max(0, maxLength - separator.length - attribution.length);
-  return `${body.slice(0, available).trimEnd()}${separator}${attribution}`.trim();
+  const prefix = `${author} on ${platform}: `;
+  const legacySuffix = `(via ${author} on ${platform})`;
+  const bare = body.startsWith(prefix) ? body.slice(prefix.length).trimStart()
+    : body.endsWith(legacySuffix) ? body.slice(0, -legacySuffix.length).trimEnd()
+    : body;
+  if (sourceIsOwn) return bare.slice(0, maxLength);
+  if (body.startsWith(prefix) || body.endsWith(legacySuffix)) return body.slice(0, maxLength);
+  const available = Math.max(0, maxLength - prefix.length);
+  return `${prefix}${bare.slice(0, available).trimEnd()}`.trim();
 }
 
 export function createDraft(input = {}) {
@@ -46,7 +53,7 @@ export function createDraft(input = {}) {
   const sourceIsOwn = input.sourceIsOwn === true;
   return {
     id: input.id || crypto.randomUUID(),
-    text: appendAttribution(input.text, sourceAuthor, sourceNetwork, 3000, sourceIsOwn),
+    text: addAttribution(input.text, sourceAuthor, sourceNetwork, 3000, sourceIsOwn),
     sourceUrl,
     sourceNetwork,
     sourceAuthor,

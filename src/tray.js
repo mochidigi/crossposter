@@ -2,7 +2,7 @@ import { ext } from "./shared/browser.js";
 import { nativeDestination } from "./shared/destinations.js";
 import { populateFileDrag } from "./shared/drag.js";
 import { getHandoffMedia } from "./shared/media-store.js";
-import { LINKEDIN_HANDOFF_STAGES } from "./shared/handoff.js";
+import { composerNotFound, composerNotFoundHint, handoffStageText } from "./shared/handoff.js";
 
 const status = document.querySelector("#status"), empty = document.querySelector("#empty"), content = document.querySelector("#content");
 const textSection = document.querySelector("#textSection"), textCard = document.querySelector("#textCard"), copyButton = document.querySelector("#copyText");
@@ -84,6 +84,7 @@ async function render(handoff) {
   if (!handoff || handoff.state === "idle") {
     releaseUrls(); targets.hidden = true; targets.replaceChildren();
     empty.hidden = false; content.hidden = true;
+    status.classList.remove("error");
     status.textContent = sessions.length ? "This crosspost is ready in Compose." : "No crossposts are open."; return;
   }
   releaseUrls();
@@ -107,6 +108,7 @@ async function render(handoff) {
   files.forEach(file => mediaBox.appendChild(mediaCard(file, [file])));
   if (files.length > 1) mediaBox.appendChild(mediaCard(null, files));
   status.textContent = statusText(handoff);
+  status.classList.toggle("error", handoffNeedsAttention(handoff));
 }
 
 function showRenderError(error) {
@@ -151,21 +153,41 @@ async function fileForMedia(item) {
 
 function statusText(handoff) {
   if (handoff.state === "preparing") return "Preparing the draggable files…";
-  if (handoff.state === "filling") return (handoff.composerProgress?.network === handoff.currentNetwork && LINKEDIN_HANDOFF_STAGES[handoff.composerProgress?.stage])
-    || `Opening and filling ${nativeDestination(handoff.currentNetwork)?.label || "the native composer"}…`;
+  if (handoff.state === "filling") {
+    const label = nativeDestination(handoff.currentNetwork)?.label || "the native composer";
+    return (handoff.composerProgress?.network === handoff.currentNetwork && handoffStageText(handoff.composerProgress?.stage, label))
+      || `Opening and filling ${label}…`;
+  }
   if (handoff.state === "error") return handoff.error || "Open the destination manually and use this tray.";
   if (handoff.mediaErrors?.length) return `Media could not be prepared: ${handoff.mediaErrors.join(" ")}`;
   const posted = handoff.postedNetworks || [];
   if (posted.length && posted.length === (handoff.networks || []).length) return "Posted to every destination in this crosspost.";
   if (posted.length) return `Posted to ${posted.length} of ${(handoff.networks || []).length} destinations.`;
   const results = handoff.results || [];
-  const failures = results.filter(item => item.error || item.result?.error);
-  if (failures.length) return failures.map(item => `${nativeDestination(item.network)?.label || item.network}: ${item.error || item.result.error}`).join(" ");
+  const failures = handoffFailures(handoff);
+  if (failures.length) return failures.map(describeFailure).join(" ");
   const filled = results.filter(item => item.result?.textInserted || item.result?.mediaInserted).length;
   if (filled === results.length && filled) return `${filled} composer${filled === 1 ? "" : "s"} filled. Review and post when ready.`;
   if (filled) return `${filled} composer${filled === 1 ? "" : "s"} filled. Use this sidebar for the remaining destinations.`;
   const labels = (handoff.networks || []).map(nativeDestination).filter(Boolean).map(destination => destination.label).join(" or ");
   return labels ? `Drag or copy this content into ${labels}’s composer.` : "Drag or copy this content into the destination composer.";
+}
+
+function handoffFailures(handoff) {
+  return (handoff.results || []).filter(item => item.error || item.result?.error);
+}
+
+// A composer the adapter never found is worth calling out: the page may be
+// logged out, or the site changed its markup and the adapter needs updating.
+function describeFailure(item) {
+  const label = nativeDestination(item.network)?.label || item.network;
+  const message = item.error || item.result?.error;
+  return composerNotFound(item.result) ? `${label}: ${message} ${composerNotFoundHint(label)}` : `${label}: ${message}`;
+}
+
+function handoffNeedsAttention(handoff) {
+  if (handoff.state === "error" || handoff.mediaErrors?.length) return true;
+  return !["preparing", "filling"].includes(handoff.state) && handoffFailures(handoff).length > 0;
 }
 
 function mediaCard(file, dragFiles) {
