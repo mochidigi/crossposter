@@ -1,6 +1,11 @@
 (() => {
   const core = globalThis.CrossposterContent;
   if (!core) return;
+  // External links are t.co anchors. A quoted post nests inside a
+  // div[role='link'] within the article, and its links belong to that post.
+  const externalLinks = (root, post) => [...(root?.querySelectorAll?.("a[href^='https://t.co/']") || [])]
+    .filter(anchor => { const wrapper = anchor.parentElement?.closest?.("[role='link']"); return !wrapper || wrapper === post || !post?.contains?.(wrapper); });
+  const displayText = anchor => String(anchor.innerText ?? anchor.textContent ?? "").replace(/\s+/g, "").replace(/^https?:\/\//, "");
   core.register({
     id: "x",
     matches: host => host === "x.com" || host.endsWith("twitter.com"),
@@ -27,7 +32,32 @@
       if (!ownMenu && !items.some(item => helpers.normalizeText(item).toLowerCase() === "copy link")) return null;
       return { container, template: items.at(-1) };
     },
-    captureText: ({ post }) => post.querySelector("[data-testid='tweetText']")?.innerText?.trim() || "",
+    // X renders every external link as a t.co anchor whose visible label is a
+    // truncated display URL, so the text keeps the href instead. Link cards
+    // sit outside tweetText; captureLinks reports them (with any inline links)
+    // and the draft appends the ones the text does not already carry. The
+    // background expands t.co through X's syndication endpoint afterwards.
+    captureText: ({ post, helpers }) => {
+      const text = post.querySelector("[data-testid='tweetText']");
+      return text ? helpers.textWithLinkUrls(text, externalLinks(text, post)) : "";
+    },
+    captureLinks: ({ post }) => {
+      const text = post.querySelector("[data-testid='tweetText']");
+      const links = new Map();
+      for (const anchor of externalLinks(post, post)) {
+        const url = anchor.href;
+        const inText = Boolean(text?.contains(anchor));
+        const card = anchor.closest("[data-testid='card.wrapper']");
+        // A card anchor labels itself "domain Title"; the order is X's markup
+        // in every UI language, not a translated string.
+        const [display = "", ...title] = card ? String(anchor.getAttribute("aria-label") || "").trim().split(/\s+/) : [];
+        const link = links.get(url) || { url, display: displayText(anchor), title: "", inText: false };
+        link.inText ||= inText;
+        if (card && display) Object.assign(link, { display, title: title.join(" ") });
+        links.set(url, link);
+      }
+      return [...links.values()];
+    },
     captureMedia: ({ post, helpers }) => helpers.mediaFromNodes(post.querySelectorAll("[data-testid='tweetPhoto'] img, [data-testid='videoComponent'] video")),
     sourceUrl: ({ post }) => {
       // Ad tweets have no timestamp permalink; their only status anchor is the

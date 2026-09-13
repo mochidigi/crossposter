@@ -59,9 +59,13 @@
       rawText = textWithout(post, "button, nav, [aria-hidden='true'], script, style");
     }
     const media = adapter?.captureMedia?.({ post, helpers }) ?? mediaFromNodes(post.querySelectorAll("img, video"));
+    // Links the post carries beside its text (link cards, previews). Inline
+    // links are the adapter's captureText responsibility (see textWithLinkUrls).
+    const links = adapter?.captureLinks?.({ post, helpers }) ?? [];
     return {
       text: String(rawText).replace(/\n{3,}/g, "\n\n").trim().slice(0, 3000),
       media,
+      links: Array.isArray(links) ? links.filter(link => link?.url).slice(0, 8) : [],
       sourceUrl: adapter?.sourceUrl?.({ post, helpers }) || location.href,
       sourceAuthor: adapter?.sourceAuthor?.({ post, helpers }) || firstText(post, ["[rel='author']", ".author", "[itemprop='author']"]),
       sourceIsOwn: Boolean(adapter?.isOwnPost?.({ post, helpers })),
@@ -298,6 +302,26 @@
       poster: node.tagName === "VIDEO" ? node.poster || "" : "",
       sources: node.tagName === "VIDEO" ? node.getAttribute("data-sources") || null : null
     })).filter(item => item.url && !item.url.startsWith("data:")).slice(0, 4);
+  }
+
+  // The rendered text of `root` with each anchor's visible label replaced by
+  // its URL. Sites render links as truncated display text ("example.com/pa…",
+  // often with hidden scheme/tail spans that innerText still emits), so the
+  // plain text would lose the link. Reads the live node (see textWithout) and
+  // matches each anchor's own innerText in document order.
+  function textWithLinkUrls(root, anchors, urlOf = anchor => anchor.href) {
+    let text = String(root?.innerText ?? root?.textContent ?? "");
+    let cursor = 0;
+    for (const anchor of anchors || []) {
+      const label = String(anchor?.innerText ?? anchor?.textContent ?? "");
+      const url = String(urlOf(anchor) || "");
+      if (!label.trim() || !url) continue;
+      const index = text.indexOf(label, cursor);
+      if (index < 0) continue;
+      text = `${text.slice(0, index)}${url}${text.slice(index + label.length)}`;
+      cursor = index + url.length;
+    }
+    return text.trim();
   }
 
   function identityFromHref(href = "", pattern = /^\/([^/?#]+)/) {
@@ -766,7 +790,7 @@
   }
 
   const helpers = Object.freeze({
-    mediaFromNodes, identityFromHref, firstText, capturePost: capture,
+    mediaFromNodes, identityFromHref, firstText, textWithLinkUrls, capturePost: capture,
     manualResult, composerNotFound, queryAllDeep, closestDeep, findVisible, normalizeText, isVisible, findDialogWithText, findClickable, waitForElement,
     svgOf, iconMatches, iconControls, findIconControl, textWithout,
     setComposerText, insertComposerTextOnce, pasteComposerText, composerHasText, fillComposerTextOnce,

@@ -54,17 +54,48 @@ for (const pkg of PKGS) {
   }
 }
 
-// AMO's linter flags dynamic `import()` arguments (UNSAFE_VAR_ASSIGNMENT). The
-// extension always loads the core from the vendored location (shared/hls.js
-// passes exactly that coreURL), so hardwire the specifier the wrapper's worker
-// would otherwise receive at runtime. When bumping the wrapper version, check
-// whether upstream made the import lint-safe — if `addons-linter` no longer
-// flags the unpatched worker.js, drop this patch.
+// Two patches to the wrapper, applied at vendoring time. When bumping the
+// wrapper version, re-check whether upstream still needs them (run
+// addons-linter and grep the vendored files for "unpkg").
+//
+// 1. const.js: upstream exports CORE_URL as a CDN default
+//    (`https://unpkg.com/@ffmpeg/core@…`). The extension never uses it
+//    (shared/hls.js always passes the bundled core), but the Chrome Web Store
+//    rejects MV3 items containing it as "remotely-hosted code" (rejection
+//    2026-09-12, ref "Blue Argon"). Point it at the bundled core instead so no
+//    remote URL remains anywhere in the package.
+const constPath = path.join(OUT, "ffmpeg", "const.js");
+const constSource = await readFile(constPath, "utf8");
+const constPatched = constSource.replace(
+  /export const CORE_URL = `https:\/\/unpkg\.com\/[^`]*`;/,
+  'export const CORE_URL = new URL("../core/ffmpeg-core.js", import.meta.url).href;'
+);
+if (constPatched === constSource) throw new Error("ffmpeg/const.js: CORE_URL patch no longer applies; re-check the wrapper source");
+if (/https?:\/\//.test(constPatched)) throw new Error("ffmpeg/const.js: a remote URL survived the patch");
+await writeFile(constPath, constPatched);
+
+// 2. worker.js: upstream's load() first tries `importScripts(_coreURL)`
+//    (classic-worker path) and on failure rewrites the CDN URL from /umd/ to
+//    /esm/ and does `await import(_coreURL)`. AMO's linter flags the dynamic
+//    import argument, and both branches read like remote code loading. The
+//    extension always runs the module-worker path with the bundled core, so
+//    replace the whole try/catch with one static import of it.
 const workerPath = path.join(OUT, "ffmpeg", "worker.js");
 const workerSource = await readFile(workerPath, "utf8");
-const patched = workerSource.replace(/await import\(([\s\S]*?)_coreURL\)/, 'await import("../core/ffmpeg-core.js")');
+const patched = workerSource.replace(
+  /    try \{\n        if \(!_coreURL\)\n            _coreURL = CORE_URL;\n[\s\S]*?importScripts\(_coreURL\);\n    \}\n    catch \{\n[\s\S]*?self\.createFFmpegCore = \(await import\([\s\S]*?_coreURL\)\)\.default;\n        if \(!self\.createFFmpegCore\) \{\n            throw ERROR_IMPORT_FAILURE;\n        \}\n    \}\n/,
+  '    if (!_coreURL)\n        _coreURL = CORE_URL;\n    // Module worker: always the bundled core (static specifier; see fetch-ffmpeg.mjs).\n    self.createFFmpegCore = (await import("../core/ffmpeg-core.js")).default;\n    if (!self.createFFmpegCore) {\n        throw ERROR_IMPORT_FAILURE;\n    }\n'
+);
 if (patched === workerSource) throw new Error("ffmpeg/worker.js: static-import patch no longer applies; re-check the wrapper source");
+if (/importScripts|import\(_coreURL\)/.test(patched)) throw new Error("ffmpeg/worker.js: dynamic core loading survived the patch");
 await writeFile(workerPath, patched);
+
+// Drop the wrapper's TypeScript declaration files: nothing loads them, and
+// their doc comments still quote the unpkg.com default URLs, which a store
+// reviewer's text scan would flag.
+for (const file of await readdir(path.join(OUT, "ffmpeg"))) {
+  if (/\.d\.m?ts$/.test(file)) await rm(path.join(OUT, "ffmpeg", file));
+}
 
 await rm(TMP, { recursive: true, force: true });
 console.log(`Fetched ffmpeg assets into ${OUT}/:`, (await readdir(OUT)).join(", "));

@@ -46,18 +46,53 @@ export function addAttribution(text, sourceAuthor, sourceNetwork, maxLength = 30
   return `${prefix}${bare.slice(0, available).trimEnd()}`.trim();
 }
 
+// Links a capture found on the post: inline links already sit in the text
+// (`inText`), while link cards and previews sit beside it and would be lost
+// unless their URL is written into the draft. Each URL is placed at most once;
+// after that the link is marked `inText` so a later re-creation of the same
+// draft (reload, history, session restore) never re-adds a URL the user removed.
+export function normalizeCapturedLinks(links) {
+  if (!Array.isArray(links)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const item of links) {
+    const url = String(item?.url || "").trim();
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    result.push({
+      url,
+      display: String(item?.display || "").replace(/\s+/g, " ").trim(),
+      title: String(item?.title || "").replace(/\s+/g, " ").trim(),
+      inText: item?.inText === true
+    });
+  }
+  return result.slice(0, 8);
+}
+
+export function placeLinksInText(text, links) {
+  let body = String(text || "").trim();
+  const placed = links.map(link => {
+    if (link.inText) return link;
+    if (!body.includes(link.url)) body = `${body}\n\n${link.url}`.trim();
+    return { ...link, inText: true };
+  });
+  return { text: body, links: placed };
+}
+
 export function createDraft(input = {}) {
   const sourceUrl = String(input.sourceUrl || "");
   const sourceNetwork = input.sourceNetwork || detectNetwork(sourceUrl);
   const sourceAuthor = String(input.sourceAuthor || "").replace(/\s+/g, " ").trim();
   const sourceIsOwn = input.sourceIsOwn === true;
+  const { text, links } = placeLinksInText(input.text, normalizeCapturedLinks(input.links));
   return {
     id: input.id || crypto.randomUUID(),
-    text: addAttribution(input.text, sourceAuthor, sourceNetwork, 3000, sourceIsOwn),
+    text: addAttribution(text, sourceAuthor, sourceNetwork, 3000, sourceIsOwn),
     sourceUrl,
     sourceNetwork,
     sourceAuthor,
     sourceIsOwn,
+    links,
     media: Array.isArray(input.media) ? input.media.map(({ alt: _legacyAlt, ...item }) => item) : [],
     destinations: Array.isArray(input.destinations) ? input.destinations : [],
     createdAt: input.createdAt || Date.now()

@@ -5,6 +5,7 @@ import { resolveReshareMedia } from "./shared/downloaders.js";
 import { nativeDestination } from "./shared/destinations.js";
 import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
+import { expandCapturedLinks } from "./shared/links.js";
 import { clearHandoffMedia, readHandoffMediaChunk } from "./shared/media-store.js";
 import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, platformOriginsForIds, registeredPlatformContentScripts } from "./shared/content-scripts.js";
 import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, inlineActionsEnabled, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY } from "./shared/preferences.js";
@@ -755,6 +756,9 @@ async function cancelPendingCapture(token) {
 }
 
 async function openCapturedPost(captured = {}, videoHint, options = {}) {
+  // Resolve shortened link URLs (X's t.co) before the draft is built so the
+  // composer text and link cards carry the real destinations.
+  captured = await expandCapturedLinks(captured);
   const media = Array.isArray(captured.media) ? captured.media : [];
   if (!options.skipAccessGate) {
     const platformId = sourceAccessPlatform(createDraft({ ...captured, media }));
