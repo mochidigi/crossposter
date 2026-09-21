@@ -58,7 +58,7 @@ export function handoffStageText(stage, label = "the destination") {
 // no longer recognizes because the site changed its markup. The user can
 // tell those apart by looking at the page, so say so.
 export function composerNotFound(result) {
-  return Boolean(result) && result.composerOpened === false && result.stage === "locate";
+  return Boolean(result) && result.composerOpened === false && result.stage === "locate" && result.reason !== "signed-out";
 }
 
 export function composerNotFoundHint(label = "The site") {

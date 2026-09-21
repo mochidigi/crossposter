@@ -73,26 +73,45 @@
     },
     async openComposer({ handoff, files, helpers }) {
       if (!(location.hostname === "bsky.app" || location.hostname.endsWith(".bsky.app"))) throw new Error("Open Bluesky in this tab, then use the Crossposter sidebar.");
-      const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "bluesky", stage);
+      // Stage bookkeeping mirrors LinkedIn: the sidebar shows the stage while
+      // the handoff runs, and a failure names the stage that did not complete
+      // instead of a generic "open the composer" message.
+      const started = Date.now(), stages = [];
+      let stage = "locate", composerOpened = false, textInserted = false, mediaInserted = 0;
+      const report = name => {
+        stage = name;
+        stages.push({ stage, elapsedMs: Date.now() - started });
+        helpers.reportComposerStage?.(handoff.handoffId, "bluesky", stage);
+      };
+      const result = (error, extra = {}) => ({ ok: true, composerOpened, textInserted, mediaInserted, stage, stages, error, ...extra });
       const selector = "textarea[placeholder*='What'], [data-testid='composePostTextArea'], [role='dialog'] textarea, [role='dialog'] [contenteditable='true']";
       report("locate");
       let field = helpers.findVisible(selector);
       if (!field) {
         const launch = helpers.findVisible("[data-testid='composeFAB'], button[aria-label*='compose' i][aria-label*='post' i], a[href*='/intent/compose']")
           || helpers.findClickable("New post", document, element => !element.closest("[role='dialog']"), false);
-        if (!launch) return helpers.composerNotFound("Open Bluesky’s post composer, then use the Crossposter sidebar.");
+        if (!launch) {
+          // A signed-out bsky.app still renders the public feed but no
+          // compose control, so "open the composer" would send the user
+          // looking for a button that does not exist. Say why instead; the
+          // reason keeps the sidebar from adding its "layout changed" hint.
+          if (blueskySignedOut()) return result(MESSAGES["signed-out"], { reason: "signed-out" });
+          return result(MESSAGES.locate);
+        }
         report("open");
         launch.click();
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector)); }
-        catch { return helpers.composerNotFound("Open Bluesky’s post composer, then use the Crossposter sidebar."); }
+        catch { return result(MESSAGES.open); }
       }
+      composerOpened = true;
       report("fill-text");
       // The composer text is inserted once per composer: the background
       // re-sends the handoff when the media input was not ready in time, and
       // that redelivery must not append the text a second time.
       const root = helpers.closestDeep(field, "[role='dialog'], dialog") || document;
-      const textInserted = await helpers.fillComposerTextOnce(field, root, handoff.text || "", { method: "set" });
-      let mediaInserted = 0;
+      textInserted = await helpers.fillComposerTextOnce(field, root, handoff.text || "", { method: "set" });
+      const failures = [];
+      if (handoff.text && !textInserted) failures.push({ stage: "fill-text", message: MESSAGES["fill-text"] });
       if (files.length) {
         report("attach");
         let input = helpers.findCompatibleFileInput(files, root);
@@ -108,14 +127,40 @@
         mediaInserted = input
           ? helpers.attachFilesToInput(files, input)
           : helpers.attachNativeFiles(files, root);
+        if (!mediaInserted) failures.push({ stage: "attach", message: MESSAGES.attach });
       }
-      const errors = [];
-      if (handoff.text && !textInserted) errors.push("Bluesky did not accept the post text.");
-      if (files.length && !mediaInserted) errors.push("Bluesky did not expose its media upload control.");
-      if (!errors.length) report("ready");
-      return { ok: true, composerOpened: true, textInserted, mediaInserted, error: errors.join(" ") };
+      if (failures.length) {
+        // Both steps ran so the sidebar can say everything that went wrong,
+        // but the reported stage is the first one that failed.
+        stage = failures[0].stage;
+        return result(failures.map(failure => failure.message).join(" "));
+      }
+      report("ready");
+      return result("");
     }
   });
+
+  // What the sidebar shows when a stage does not complete. Each message names
+  // the step so the user knows how far the handoff got.
+  const MESSAGES = Object.freeze({
+    "signed-out": "You are not signed in to Bluesky in this browser. Sign in to Bluesky, then use the Crossposter sidebar.",
+    locate: "Bluesky’s post composer and its New post control were not found. Open Bluesky’s post composer, then use the Crossposter sidebar.",
+    open: "Bluesky’s post composer did not open after its New post control was activated. Open the composer yourself, then use the Crossposter sidebar.",
+    "fill-text": "Bluesky’s composer opened but did not accept the post text. Copy the text from the sidebar.",
+    attach: "Bluesky’s composer opened but did not expose its media upload control. Drag the media from the sidebar."
+  });
+
+  // Signed-in Bluesky always renders its navigation with fixed, language-
+  // neutral hrefs plus the compose control; the signed-out landing page shows
+  // only the public feed with localized Sign in / Create account buttons that
+  // carry no stable attribute. Require some rendered app content so a page
+  // that has not painted yet is not mistaken for a signed-out one.
+  function blueskySignedOut() {
+    const signedIn = document.querySelector(
+      "[data-testid='composeFAB'], a[href='/notifications'], a[href='/messages'], a[href^='/settings'], nav a[href*='/profile/']"
+    );
+    return !signedIn && Boolean(document.querySelector("[data-testid]"));
+  }
 
   function blueskyPostUrl(post) {
     const href = post?.querySelector?.("a[href*='/post/']")?.getAttribute?.("href") || "";
