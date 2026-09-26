@@ -6,6 +6,14 @@
   const externalLinks = (root, post) => [...(root?.querySelectorAll?.("a[href^='https://t.co/']") || [])]
     .filter(anchor => { const wrapper = anchor.parentElement?.closest?.("[role='link']"); return !wrapper || wrapper === post || !post?.contains?.(wrapper); });
   const displayText = anchor => String(anchor.innerText ?? anchor.textContent ?? "").replace(/\s+/g, "").replace(/^https?:\/\//, "");
+  // X renders the home timeline behind its compose dialog, and the timeline's
+  // inline composer carries the same test id and comes first in the page. Take
+  // the dialog's editor when there is one; on the /compose/post route (where
+  // Crossposter opens X) the dialog is the composer, so wait for it.
+  const INLINE_FIELD = "[data-testid='tweetTextarea_0']";
+  const DIALOG_FIELD = "[role='dialog'] [data-testid='tweetTextarea_0'], [role='dialog'] [contenteditable='true'][role='textbox']";
+  const onComposeRoute = () => /^\/compose\/(?:post|tweet)(?:[/?#]|$)/.test(location.pathname || "");
+  const composerField = helpers => helpers.findVisible(DIALOG_FIELD) || (onComposeRoute() ? null : helpers.findVisible(INLINE_FIELD));
   core.register({
     id: "x",
     matches: host => host === "x.com" || host.endsWith("twitter.com"),
@@ -85,23 +93,29 @@
     }),
     nativePostSubmission: ({ target, helpers }) => {
       const button = target?.closest?.("[data-testid='tweetButton'], [data-testid='tweetButtonInline']");
-      const field = helpers.findVisible("[data-testid='tweetTextarea_0'], [role='dialog'] [contenteditable='true'][role='textbox']");
-      if (!button || !field || button.disabled) return null;
-      const composer = helpers.closestDeep(field, "[role='dialog'], dialog") || field;
+      if (!button || button.disabled) return null;
+      // The composer is the one the clicked Post button belongs to.
+      const dialog = helpers.closestDeep(button, "[role='dialog'], dialog");
+      const field = dialog
+        ? helpers.findVisible(`${INLINE_FIELD}, [contenteditable='true'][role='textbox']`, dialog)
+        : helpers.findVisible(INLINE_FIELD);
+      if (!field) return null;
+      const composer = dialog || field;
       return { isOpen: () => composer.isConnected && helpers.isVisible(composer) };
     },
     async openComposer({ handoff, files, helpers }) {
       if (!(location.hostname === "x.com" || location.hostname.endsWith("twitter.com"))) throw new Error("Open X in this tab, then use the Crossposter sidebar.");
       const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "x", stage);
-      const selector = "[data-testid='tweetTextarea_0'], [role='dialog'] [contenteditable='true'][role='textbox']";
       report("locate");
-      let field = helpers.findVisible(selector);
+      let field = composerField(helpers);
       if (!field) {
-        const launch = helpers.findVisible("[data-testid='SideNav_NewTweet_Button'], a[href='/compose/post']");
-        if (!launch) return helpers.composerNotFound("Open X’s post composer, then use the Crossposter sidebar.");
-        report("open");
-        launch.click();
-        try { field = await helpers.waitForElement(() => helpers.findVisible(selector), 20000); }
+        if (!onComposeRoute()) {
+          const launch = helpers.findVisible("[data-testid='SideNav_NewTweet_Button'], a[href='/compose/post']");
+          if (!launch) return helpers.composerNotFound("Open X’s post composer, then use the Crossposter sidebar.");
+          report("open");
+          launch.click();
+        }
+        try { field = await helpers.waitForElement(() => composerField(helpers), 20000); }
         catch { return helpers.composerNotFound("Open X’s post composer, then use the Crossposter sidebar."); }
       }
       report("fill-text");

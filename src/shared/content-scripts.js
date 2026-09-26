@@ -15,6 +15,7 @@ export const PLATFORM_PERMISSION_GROUPS = Object.freeze({
   instagram: permissionGroup(["https://www.instagram.com/*", "https://instagram.com/*"], ["https://*.cdninstagram.com/*", "https://*.fbcdn.net/*"]),
   threads: permissionGroup(["https://www.threads.com/*", "https://threads.com/*"], ["https://*.cdninstagram.com/*", "https://*.fbcdn.net/*"]),
   facebook: permissionGroup(["https://www.facebook.com/*", "https://web.facebook.com/*", "https://facebook.com/*"], ["https://*.fbcdn.net/*"]),
+  substack: permissionGroup(["https://substack.com/*"], ["https://substackcdn.com/*", "https://substack-post-media.s3.amazonaws.com/*", "https://stream.mux.com/*"]),
   youtube: permissionGroup([], ["https://*.googlevideo.com/*"])
 });
 
@@ -25,7 +26,8 @@ export const PLATFORM_CONTENT_SCRIPTS = [
   { platformId: "upscrolled", id: "crossposter-upscrolled", file: "platforms/upscrolled/content.js", matches: PLATFORM_PERMISSION_GROUPS.upscrolled.documents, hosts: host => host === "upscrolled.com" || host === "www.upscrolled.com" },
   { platformId: "instagram", id: "crossposter-instagram", file: "platforms/instagram/content.js", matches: PLATFORM_PERMISSION_GROUPS.instagram.documents, hosts: host => host === "instagram.com" || host === "www.instagram.com" },
   { platformId: "threads", id: "crossposter-threads", file: "platforms/threads/content.js", matches: PLATFORM_PERMISSION_GROUPS.threads.documents, hosts: host => host === "threads.com" || host === "www.threads.com" },
-  { platformId: "facebook", id: "crossposter-facebook", file: "platforms/facebook/content.js", matches: PLATFORM_PERMISSION_GROUPS.facebook.documents, hosts: host => host === "facebook.com" || host === "www.facebook.com" || host === "web.facebook.com" }
+  { platformId: "facebook", id: "crossposter-facebook", file: "platforms/facebook/content.js", matches: PLATFORM_PERMISSION_GROUPS.facebook.documents, hosts: host => host === "facebook.com" || host === "www.facebook.com" || host === "web.facebook.com" },
+  { platformId: "substack", id: "crossposter-substack", file: "platforms/substack/content.js", matches: PLATFORM_PERMISSION_GROUPS.substack.documents, hosts: host => host === "substack.com" }
 ];
 
 export function registerPlatformContentScript(script) {

@@ -34,11 +34,11 @@
     <p class="preferences-copy">Enabled platforms appear as destinations and receive Crossposter’s page integration. Choose which should be selected by default.</p>
     <div class="platform-preference-head"><span>Platform</span><span>Enabled</span><span>Default</span></div>
     <div id="settingsDestinations" class="preferences-options"></div>
-    <label class="inline-action-preference"><span><strong>Show Crosspost shortcuts</strong><small>Add Crosspost to post actions on X, LinkedIn, Facebook, and Threads.</small></span><input id="settingsInlineActions" type="checkbox"></label>
+    <label class="inline-action-preference"><span><strong>Show Crosspost shortcuts</strong><small>Add Crosspost to post actions on X, LinkedIn, Facebook, Threads, and Substack.</small></span><input id="settingsInlineActions" type="checkbox"></label>
     <p id="settingsError" class="errors" role="alert"></p>
     <section class="settings-danger" aria-labelledby="clearDataTitle">
       <strong id="clearDataTitle">Clear all data</strong>
-      <p>Delete saved drafts, history, preferences, reminders, temporary media, and open Crossposter sessions.</p>
+      <p>Delete saved drafts, history, preferences, temporary media, and open Crossposter sessions.</p>
       <button id="settingsClearData" class="danger-button" type="button">Clear all Crossposter data</button>
       <p id="settingsClearError" class="errors" role="alert"></p>
     </section>
@@ -48,7 +48,7 @@
 <dialog id="historyDialog" class="preferences-dialog history-dialog" aria-labelledby="historyTitle">
   <section class="preferences-card">
     <header class="clip-head"><div><div class="eyebrow">Saved work</div><h2 id="historyTitle">Draft history</h2></div><button id="historyClose" class="clip-close" type="button" aria-label="Close history"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
-    <p class="preferences-copy">Crossposter saves the 20 most recent handoffs. Because posting happens on each platform, restore anything you still need or delete work you have finished.</p>
+    <p class="preferences-copy">Crossposter keeps your 20 most recent handoffs for 14 days, including their media. Because posting happens on each platform, restore anything you still need or delete work you have finished.</p>
     <div id="historyList" class="history-list"></div>
     <footer class="clip-actions"><button id="historyDone" class="primary" type="button">Done</button></footer>
   </section>

@@ -7,7 +7,7 @@ per release. Each commit corresponds to one released version (tagged
 the code that runs in your browser.
 
 Crossposter captures a post and prepares it in the native composers of
-Upscrolled, LinkedIn, X, Bluesky, Instagram, Threads, and Facebook.
+UpScrolled, LinkedIn, X, Bluesky, Instagram, Threads, Facebook, and Substack Notes.
 
 ## Why this repo exists
 

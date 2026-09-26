@@ -26,20 +26,6 @@ const slides = [
       <rect class="art-paper" x="60" y="28" width="286" height="204" rx="3"/><path class="art-line" d="M60 65h286M84 47h90"/><circle class="art-fill" cx="91" cy="91" r="13"/><path class="art-line" d="M114 85h92M114 98h60"/><rect class="art-media" x="84" y="119" width="238" height="88" rx="2"/><path class="art-glyph" d="m184 143 35 20-35 20z"/>
       <rect class="art-menu" x="281" y="87" width="178" height="112" rx="3"/><path class="art-menu-line" d="M302 114h88M302 139h65"/><rect class="art-menu-active" x="289" y="153" width="162" height="36" rx="2"/><path class="art-glyph" d="M306 171h16m-6-6 6 6-6 6"/><text class="art-text" x="333" y="176">Crosspost</text><path class="art-cursor" d="m259 147 12 43 10-13 16 13 8-9-16-13 13-9z"/>
     </svg>`
-  },
-  {
-    eyebrow: "A helpful nudge",
-    title: "Crossposter detects new posts",
-    copy: "When you post directly, Crossposter adds a reminder badge so you can share elsewhere easily.",
-    art: `<svg viewBox="0 0 520 260" role="img" aria-label="A LinkedIn post and the Crossposter toolbar button showing a reminder badge">
-      <rect class="art-browser" x="44" y="30" width="432" height="200" rx="4"/><path class="art-browser-bar" d="M44 76h432"/>
-      <circle class="art-window-dot" cx="67" cy="53" r="5"/><circle class="art-window-dot" cx="84" cy="53" r="5"/><circle class="art-window-dot" cx="101" cy="53" r="5"/>
-      <rect class="art-address" x="125" y="42" width="236" height="23" rx="11"/><path class="art-line" d="M145 53h92"/>
-      <rect class="art-toolbar-button" x="398" y="38" width="32" height="32" rx="5"/><image href="icons/icon-32.png" x="400" y="40" width="28" height="28"/>
-      <circle class="art-reminder-badge" cx="432" cy="38" r="12"/><text class="art-badge-text" x="432" y="42">1</text>
-      <rect class="art-post" x="136" y="94" width="248" height="110" rx="3"/><circle class="art-fill" cx="160" cy="117" r="11"/><path class="art-line" d="M180 111h76M180 124h48M155 150h205M155 167h171"/><rect class="art-dark" x="155" y="181" width="77" height="8" rx="1"/>
-      <path class="art-reminder-line" d="M388 54c-34 5-46 25-45 48"/><path class="art-reminder-tip" d="m337 93 6 10 7-10"/>
-    </svg>`
   }
 ];
 

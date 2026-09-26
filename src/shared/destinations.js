@@ -5,7 +5,8 @@ export const NATIVE_DESTINATIONS = Object.freeze([
   { id: "bluesky", label: "Bluesky", icon: "icons/networks/bluesky.svg", homeUrl: "https://bsky.app/" },
   { id: "instagram", label: "Instagram", icon: "icons/networks/instagram.svg", homeUrl: "https://www.instagram.com/" },
   { id: "threads", label: "Threads", icon: "icons/networks/threads.svg", homeUrl: "https://www.threads.com/" },
-  { id: "facebook", label: "Facebook", icon: "icons/networks/facebook.svg", homeUrl: "https://www.facebook.com/" }
+  { id: "facebook", label: "Facebook", icon: "icons/networks/facebook.svg", homeUrl: "https://www.facebook.com/" },
+  { id: "substack", label: "Substack", icon: "icons/networks/substack.svg", homeUrl: "https://substack.com/home" }
 ]);
 
 export function nativeDestination(id) { return NATIVE_DESTINATIONS.find(destination => destination.id === id) || null; }

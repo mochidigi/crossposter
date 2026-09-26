@@ -8,9 +8,9 @@ import { handoffFilename, handoffMediaType } from "./shared/handoff.js";
 import { muxMp4Tracks } from "./shared/hls.js";
 import { isStreamMedia, prepareStreamMedia } from "./shared/media-preparation.js";
 import { deleteHandoffMedia, getHandoffMedia, storeHandoffMedia } from "./shared/media-store.js";
-import { DRAFT_HISTORY_KEY, draftHistoryEntry, removeDraftHistoryEntry, upsertDraftHistory } from "./shared/draft-history.js";
+import { DRAFT_HISTORY_KEY, draftHistoryEntry, expireDraftHistory, removeDraftHistoryEntry, upsertDraftHistory } from "./shared/draft-history.js";
 import { continueLabel, isNativeDestinationDisabled, NATIVE_DESTINATIONS, selectedNativeDestinations } from "./shared/destinations.js";
-import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinations, inlineActionsEnabled, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY } from "./shared/preferences.js";
+import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinations, inlineActionsEnabled, KNOWN_PLATFORMS_KEY, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY, storedEnabledPlatforms } from "./shared/preferences.js";
 import { isFreshComposerUrl } from "./shared/compose-mode.js";
 import { CROSSPOST_SESSIONS_KEY, crosspostSessionIdFromUrl } from "./shared/crosspost-sessions.js";
 import { settleVideoResolution } from "./shared/video-resolution-state.js";
@@ -49,7 +49,7 @@ const moduleStartAt = performance.now();
 // background event page (a visible cost on Firefox). Messaging stays as the
 // fallback for snapshots that have not landed yet.
 const [stored, directSessions] = await Promise.all([
-  ext.storage.local.get(["pendingDraft", DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY]),
+  ext.storage.local.get(["pendingDraft", DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, KNOWN_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY]),
   sessionId && ext.storage.session?.get ? ext.storage.session.get(CROSSPOST_SESSIONS_KEY).catch(() => null) : null
 ]);
 let crosspostSession = directSessions?.[CROSSPOST_SESSIONS_KEY]?.find(candidate => candidate?.id === sessionId) || null;
@@ -64,8 +64,10 @@ const streamPreparationTasks = new WeakMap();
 let streamPreparationQueue = Promise.resolve();
 draft = createDraft(crosspostSession?.draft || (freshCompose ? {} : stored.pendingDraft || {}));
 ext.runtime.sendMessage({ type: "REGISTER_NATIVE_TRAY_TAB", sessionId }).catch(() => {});
+// Drop expired history and its stored media (see sweepStoredData).
+ext.runtime.sendMessage({ type: "SWEEP_STORED_DATA" }).catch(() => {});
 let defaultDestinations = normalizeDefaultDestinations(stored[DEFAULT_DESTINATIONS_KEY]);
-let enabledPlatforms = normalizeEnabledPlatforms(stored[ENABLED_PLATFORMS_KEY]);
+let enabledPlatforms = storedEnabledPlatforms(stored);
 let showInlineActions = inlineActionsEnabled(stored[SHOW_INLINE_ACTIONS_KEY]);
 const text = document.querySelector("#postText"), destinations = document.querySelector("#destinations");
 const settingsDialog = document.querySelector("#settingsDialog"), settingsDestinations = document.querySelector("#settingsDestinations");
@@ -403,7 +405,7 @@ async function saveSettings() {
 }
 
 async function clearAllData() {
-  if (!confirm("Clear all Crossposter data? This deletes saved drafts, history, preferences, reminders, temporary media, and other open Crossposter sessions.")) return;
+  if (!confirm("Clear all Crossposter data? This deletes saved drafts, history, preferences, temporary media, and other open Crossposter sessions.")) return;
   settingsClearData.disabled = true;
   settingsClearData.textContent = "Clearing…";
   settingsClearError.textContent = "";
@@ -894,9 +896,13 @@ function label(id) { return NATIVE_DESTINATIONS.find(destination => destination.
 function escapeAttr(value) { return String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"); }
 function formatHistoryTime(timestamp) { return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(timestamp || Date.now())); }
 
+// Expired entries are never shown or re-saved; the background sweep deletes
+// their stored media.
 async function readDraftHistory() {
   const result = await ext.storage.local.get(DRAFT_HISTORY_KEY);
-  return Array.isArray(result[DRAFT_HISTORY_KEY]) ? result[DRAFT_HISTORY_KEY] : [];
+  const { history, expired } = expireDraftHistory(result[DRAFT_HISTORY_KEY]);
+  if (expired) await ext.storage.local.set({ [DRAFT_HISTORY_KEY]: history });
+  return history;
 }
 
 async function saveDraftHistory(preparedMedia) {

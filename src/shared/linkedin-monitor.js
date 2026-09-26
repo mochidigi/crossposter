@@ -33,54 +33,8 @@ export function linkedInPublishCandidate(details = {}) {
     requestId: String(details.requestId || ""),
     tabId: Number(details.tabId),
     detectedAt: Number(details.timeStamp) || Date.now(),
-    endpoint: `${parsed.origin}${parsed.pathname}`,
-    textHint: linkedInPostTextHint(decodedBody)
+    endpoint: `${parsed.origin}${parsed.pathname}`
   };
 }
 
-export function linkedInPostTextHint(body = "") {
-  const candidates = [];
-  const visit = (value, key = "") => {
-    if (typeof value === "string") {
-      if (/(?:commentary|text|message|comment)/i.test(key) && isHumanText(value)) candidates.push(value);
-      return;
-    }
-    if (Array.isArray(value)) { value.forEach(item => visit(item, key)); return; }
-    if (value && typeof value === "object") for (const [childKey, child] of Object.entries(value)) visit(child, childKey);
-  };
-  for (const candidate of jsonCandidates(body)) {
-    try { visit(JSON.parse(candidate)); } catch {}
-  }
-  const quoted = [...String(body).matchAll(/"(?:commentary|text|message)"\s*:\s*"((?:\\.|[^"\\])*)"/gi)];
-  for (const match of quoted) {
-    try {
-      const value = JSON.parse(`"${match[1]}"`);
-      if (isHumanText(value)) candidates.push(value);
-    } catch {}
-  }
-  return candidates.map(normalizeText).sort((left, right) => right.length - left.length)[0]?.slice(0, 3000) || "";
-}
-
-export function linkedInTextFingerprint(value = "") {
-  return normalizeText(value).toLocaleLowerCase().slice(0, 280);
-}
-
-function jsonCandidates(body) {
-  const value = String(body || "").trim();
-  const candidates = value ? [value] : [];
-  for (const part of value.split(/[&\n]/)) {
-    const equals = part.indexOf("=");
-    if (equals < 0) continue;
-    const decoded = safelyDecode(part.slice(equals + 1));
-    if (decoded.startsWith("{") || decoded.startsWith("[")) candidates.push(decoded);
-  }
-  return candidates;
-}
-
-function isHumanText(value) {
-  const text = normalizeText(value);
-  return Boolean(text && text.length <= 3000 && !/^urn:li:/i.test(text) && !/^https?:\/\//i.test(text));
-}
-
-function normalizeText(value) { return String(value || "").replace(/\\n/g, "\n").replace(/\s+/g, " ").trim(); }
 function safelyDecode(value) { try { return decodeURIComponent(String(value || "").replace(/\+/g, " ")); } catch { return String(value || ""); } }

@@ -14,6 +14,7 @@ const PLATFORM_LABELS = Object.freeze({
   instagram: "Instagram",
   threads: "Threads",
   facebook: "Facebook",
+  substack: "Substack",
   web: "the web"
 });
 
@@ -108,6 +109,7 @@ export function detectNetwork(url = "") {
   if (host === "threads.com" || host.endsWith(".threads.com")) return "threads";
   if (host === "facebook.com" || host.endsWith(".facebook.com")) return "facebook";
   if (host.endsWith("upscrolled.com")) return "upscrolled";
+  if (host === "substack.com" || host.endsWith(".substack.com")) return "substack";
   const registered = sourceNetworks.find(network => network.matches(host));
   if (registered) return registered.id;
   return "web";

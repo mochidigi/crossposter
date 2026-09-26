@@ -1,7 +1,6 @@
 (() => {
   const core = globalThis.CrossposterContent;
   if (!core) return;
-  const detectionBaselines = new Map();
   const linkedInVideoSourceCache = new Map();
   // Find the dialog and then its editor. An ancestor CSS selector cannot
   // cross shadow boundaries, even when queryAllDeep visits both roots.
@@ -58,13 +57,6 @@
       runningHandoff = { id, promise };
       return promise;
     },
-    messages: {
-      ARM_LINKEDIN_POST_DETECTION: ({ message, helpers }) => {
-        detectionBaselines.set(message.candidate?.requestId || "", new Set(linkedInPosts(helpers).map(post => linkedInPostKey(post, helpers))));
-        return { ok: true };
-      },
-      DETECT_LINKEDIN_POST: ({ message, helpers }) => detectNewLinkedInPost(message.candidate || {}, helpers)
-    }
   };
   core.register(adapter);
 
@@ -508,47 +500,6 @@
           && !/(?:avatar|profile|logo|emoji)/i.test(`${node.alt || ""} ${node.className || ""}`)));
     }
     return helpers.mediaFromNodes(nodes);
-  }
-
-  function linkedInPosts(helpers) {
-    const legacy = adapter.postSelectors.slice(0, 3).flatMap(selector => helpers.queryAllDeep(selector));
-    // Each current feed item starts with a screen-reader heading whose text is
-    // localized; recognise it by the action bar it introduces instead.
-    const current = helpers.queryAllDeep("h2")
-      .map(heading => helpers.closestDeep(heading, "[role='listitem']") || heading.parentElement)
-      .filter(item => item && (helpers.normalizeText(item.querySelector?.("h2")) === "feed post"
-        || helpers.queryAllDeep("button, a", item).some(element => helpers.iconMatches?.(element, { ids: ACTION_ICONS.send.ids }))));
-    return [...new Set([...legacy, ...current])].filter(post => helpers.isVisible(post));
-  }
-
-  function linkedInPostKey(post, helpers) {
-    if (post.getAttribute?.("componentkey")) return post.getAttribute("componentkey");
-    const url = linkedInSourceUrl({ post, helpers });
-    if (/urn:li:|\/posts\//i.test(url)) return url;
-    return `${linkedInCaptureText({ post, helpers }).replace(/\s+/g, " ").trim().slice(0, 500)}|${linkedInCaptureMedia({ post, helpers }).map(item => item.url).join("|")}`;
-  }
-
-  function comparableText(value) { return String(value || "").replace(/\s+/g, " ").trim().toLowerCase(); }
-
-  async function detectNewLinkedInPost(candidate, helpers) {
-    const requestId = candidate.requestId || "";
-    const baseline = detectionBaselines.get(requestId) || new Set();
-    const hint = comparableText(candidate.textHint);
-    const deadline = Date.now() + 45000;
-    try {
-      while (Date.now() < deadline) {
-        const post = linkedInPosts(helpers).find(element => {
-          if (!linkedInIsOwnPost({ post: element, helpers })) return false;
-          const key = linkedInPostKey(element, helpers);
-          const text = comparableText(linkedInCaptureText({ post: element, helpers }));
-          if (!baseline.size && !hint) return false;
-          return !baseline.has(key) && (!hint || text.includes(hint) || hint.includes(text));
-        });
-        if (post) return { ok: true, captured: helpers.capturePost(post) };
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      return { ok: false, error: "The new LinkedIn post did not appear in the open feed." };
-    } finally { detectionBaselines.delete(requestId); }
   }
 
 })();

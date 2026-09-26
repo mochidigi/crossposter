@@ -6,12 +6,13 @@ import { nativeDestination } from "./shared/destinations.js";
 import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { expandCapturedLinks } from "./shared/links.js";
-import { clearHandoffMedia, readHandoffMediaChunk } from "./shared/media-store.js";
+import { clearHandoffMedia, deleteHandoffMedia, listHandoffMediaRecords, readHandoffMediaChunk } from "./shared/media-store.js";
+import { DRAFT_HISTORY_KEY, expireDraftHistory } from "./shared/draft-history.js";
+import { referencedMediaIds, unreferencedMediaIds } from "./shared/retention.js";
 import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, platformOriginsForIds, registeredPlatformContentScripts } from "./shared/content-scripts.js";
-import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, inlineActionsEnabled, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY } from "./shared/preferences.js";
+import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, inlineActionsEnabled, KNOWN_PLATFORMS_KEY, normalizeDefaultDestinations, normalizeEnabledPlatforms, PLATFORM_IDS, SHOW_INLINE_ACTIONS_KEY, storedEnabledPlatforms } from "./shared/preferences.js";
 import { linkedInPublishCandidate } from "./shared/linkedin-monitor.js";
 import { linkedInDashManifestRequest, linkedInDashPlaylist, linkedInVhsPlaylist, linkedInVideoRequest, selectLinkedInVideoRequest } from "./platforms/linkedin/network.js";
-import { DETECTED_DRAFTS_KEY, detectedBadgeText, enqueueDetectedDraft, removeDetectedDraft } from "./shared/detected-posts.js";
 import { CROSSPOST_SESSIONS_KEY, crosspostComposerUrl, recordPostedDestination, resetCrosspostHandoff, sessionForTab, sessionPreview, sessionTabIds } from "./shared/crosspost-sessions.js";
 import { markVideoResolving, settleVideoResolution } from "./shared/video-resolution-state.js";
 import { resolvePageVideoHint } from "./shared/source-video.js";
@@ -35,7 +36,6 @@ const closingCrosspostWindows = new Set();
 const suppressPanelCloseUntil = new Map();
 const pendingLinkedInPublishes = new Map();
 const linkedInVideoRequests = new Map();
-const LINKEDIN_NOTIFICATION_PREFIX = "crossposter-linkedin:";
 ext.windows.onRemoved?.addListener(windowId => { if (windowId === trayWindowId) trayWindowId = null; });
 ext.tabs.onCreated?.addListener(tab => {
   if (!scopedSidePanel || !nativeSidePanelWindows.has(tab.windowId)) return;
@@ -50,10 +50,11 @@ ext.tabs.onRemoved?.addListener(tabId => {
 });
 ext.tabs.onActivated?.addListener(activeInfo => noteActiveCrosspostTab(activeInfo).catch(() => {}));
 ext.sidePanel?.onClosed?.addListener(info => closeComposerTabsForPanel(info, false).catch(() => {}));
-// Buffer/account settings are obsolete in the native-composer model. Remove
-// any previously stored token/profile data when the rebuilt worker starts.
-ext.storage.local.remove("settings").catch?.(() => {});
-refreshDetectedBadge().catch(() => {});
+// Buffer/account settings are obsolete in the native-composer model, and the
+// LinkedIn "post detected" queue has been retired. Remove their stored data,
+// and the queue's badge count, when the rebuilt worker starts.
+ext.storage.local.remove(["settings", "detectedDrafts"]).catch?.(() => {});
+ext.action?.setBadgeText?.({ text: "" })?.catch?.(() => {});
 synchronizePlatformContentScripts().catch(error => console.warn("Crossposter content-script registration failed:", error));
 const backgroundStateReady = Promise.all([restoreNativeSidePanelState(), restoreCrosspostSessions()]);
 backgroundStateReady.then(() => {
@@ -69,8 +70,6 @@ if (ext.webRequest?.onBeforeRequest) {
     if (!candidate) return;
     pruneLinkedInCandidates();
     pendingLinkedInPublishes.set(candidate.requestId, candidate);
-    const armed = ext.tabs.sendMessage(candidate.tabId, { type: "ARM_LINKEDIN_POST_DETECTION", candidate });
-    armed?.catch?.(() => {});
   }, filter, ["requestBody"]);
   ext.webRequest.onCompleted.addListener(details => {
     const candidate = pendingLinkedInPublishes.get(String(details.requestId));
@@ -106,6 +105,7 @@ ext.runtime.onInstalled.addListener(async details => {
   // A fresh install or update is a new chance to ask: forget an earlier "not now".
   if (details?.reason === "install" || details?.reason === "update") await ext.storage.local.remove(SITE_ACCESS_DISMISSED_KEY).catch(() => {});
   await promptForMissingSiteAccess();
+  await sweepStoredData().catch(error => console.warn("Crossposter storage cleanup failed:", error));
 });
 ext.runtime.onStartup?.addListener(async () => {
   const enabled = await synchronizePlatformContentScripts().catch(error => {
@@ -114,7 +114,35 @@ ext.runtime.onStartup?.addListener(async () => {
   });
   await reinjectOpenPlatformTabs(enabled);
   await promptForMissingSiteAccess();
+  await sweepStoredData().catch(error => console.warn("Crossposter storage cleanup failed:", error));
 });
+
+// Retention: drop history older than 14 days and delete stored media that no
+// history entry, pending draft, or open session refers to any more. Runs at
+// browser start, after install or update, and whenever Compose opens, since
+// extension storage never expires on its own.
+let storedDataSweep = Promise.resolve();
+function sweepStoredData() {
+  storedDataSweep = storedDataSweep.catch(() => {}).then(async () => {
+    await backgroundStateReady.catch(() => {});
+    const stored = await ext.storage.local.get([DRAFT_HISTORY_KEY, "pendingDraft"]);
+    const { history, expired } = expireDraftHistory(stored[DRAFT_HISTORY_KEY]);
+    if (expired) {
+      // Re-read so an entry Compose saved meanwhile is not overwritten.
+      const latest = await ext.storage.local.get(DRAFT_HISTORY_KEY);
+      await ext.storage.local.set({ [DRAFT_HISTORY_KEY]: expireDraftHistory(latest[DRAFT_HISTORY_KEY]).history });
+    }
+    const sessions = [...crosspostSessions.values()];
+    const referenced = referencedMediaIds([
+      ...history.map(entry => entry.draft),
+      stored.pendingDraft,
+      ...sessions.flatMap(session => [session.draft, session.handoff])
+    ]);
+    await deleteHandoffMedia(unreferencedMediaIds(await listHandoffMediaRecords(), referenced));
+  });
+  return storedDataSweep;
+}
+
 // Host access granted later (welcome page, popup, compose, or about:addons)
 // must bring already-open platform tabs back to life without a reload.
 ext.permissions?.onAdded?.addListener(async () => {
@@ -317,9 +345,9 @@ async function sendLinkedInComposerMessage(tabId, message) {
 }
 
 async function readPlatformPreferences() {
-  const stored = await ext.storage.local.get([ENABLED_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY, DEFAULT_DESTINATIONS_KEY]);
+  const stored = await ext.storage.local.get([ENABLED_PLATFORMS_KEY, KNOWN_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY, DEFAULT_DESTINATIONS_KEY]);
   return {
-    enabledPlatforms: normalizeEnabledPlatforms(stored[ENABLED_PLATFORMS_KEY]),
+    enabledPlatforms: storedEnabledPlatforms(stored),
     showInlineActions: inlineActionsEnabled(stored[SHOW_INLINE_ACTIONS_KEY]),
     defaultDestinations: normalizeDefaultDestinations(stored[DEFAULT_DESTINATIONS_KEY])
   };
@@ -359,6 +387,7 @@ async function applyPlatformPreferences(message) {
   const defaultDestinations = normalizeDefaultDestinations(message.defaultDestinations);
   await ext.storage.local.set({
     [ENABLED_PLATFORMS_KEY]: enabledPlatforms,
+    [KNOWN_PLATFORMS_KEY]: [...PLATFORM_IDS],
     [SHOW_INLINE_ACTIONS_KEY]: showInlineActions,
     [DEFAULT_DESTINATIONS_KEY]: defaultDestinations
   });
@@ -475,15 +504,9 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
-  if (message?.type === "GET_DETECTED_DRAFTS") {
-    ext.storage.local.get(DETECTED_DRAFTS_KEY)
-      .then(stored => sendResponse({ ok: true, drafts: stored[DETECTED_DRAFTS_KEY] || [] }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "OPEN_DETECTED_DRAFT") {
-    openDetectedDraft(message.id)
-      .then(opened => sendResponse({ ok: opened }))
+  if (message?.type === "SWEEP_STORED_DATA") {
+    sweepStoredData()
+      .then(() => sendResponse({ ok: true }))
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
@@ -626,70 +649,14 @@ async function resolvedLinkedInVideoHint(tabId, hint = {}, frameId) {
   return linkedInNetworkVideoHint(tabId, hint);
 }
 
-ext.notifications?.onClicked?.addListener(notificationId => {
-  if (notificationId.startsWith(LINKEDIN_NOTIFICATION_PREFIX)) openDetectedDraft(notificationId.slice(LINKEDIN_NOTIFICATION_PREFIX.length)).catch(() => {});
-});
-ext.notifications?.onButtonClicked?.addListener((notificationId, buttonIndex) => {
-  if (buttonIndex === 0 && notificationId.startsWith(LINKEDIN_NOTIFICATION_PREFIX)) openDetectedDraft(notificationId.slice(LINKEDIN_NOTIFICATION_PREFIX.length)).catch(() => {});
-});
-
-async function confirmLinkedInPost(candidate) {
-  await delay(700);
-  const response = await sendContentMessage(candidate.tabId, { type: "DETECT_LINKEDIN_POST", candidate });
-  if (!response?.ok || !response.captured) return false;
-  const captured = response.captured;
-  const media = Array.isArray(captured.media) ? captured.media : [];
-  const draft = createDraft({ ...captured, media, sourceIsOwn: true, detectedAt: Date.now() });
-  const stored = await ext.storage.local.get(DETECTED_DRAFTS_KEY);
-  const result = enqueueDetectedDraft(stored[DETECTED_DRAFTS_KEY], draft);
-  if (!result.added) return false;
-  await ext.storage.local.set({ [DETECTED_DRAFTS_KEY]: result.queue });
-  await refreshDetectedBadge(result.queue);
-  try {
-    await ext.notifications?.create(`${LINKEDIN_NOTIFICATION_PREFIX}${draft.id}`, {
-      type: "basic",
-      iconUrl: ext.runtime.getURL("icons/icon-128.png"),
-      title: "New LinkedIn post detected",
-      message: draft.text ? `${draft.text.slice(0, 150)}${draft.text.length > 150 ? "…" : ""}` : "Your new media post is ready to crosspost.",
-      buttons: [{ title: "Open in Crossposter" }]
-    });
-  } catch {}
-  return true;
-}
-
+// A LinkedIn publish from a Crossposter handoff tab marks that destination
+// as posted; publishes anywhere else are ignored.
 async function handleLinkedInPublishCompleted(candidate) {
   const marked = await markNativePostForTab(candidate.tabId, "linkedin", "linkedin-publish-response-v1");
-  if (marked) {
-    const sent = ext.tabs.sendMessage(candidate.tabId, { type: "MARK_NATIVE_POSTED" });
-    sent?.catch?.(() => {});
-    return true;
-  }
-  return confirmLinkedInPost(candidate);
-}
-
-async function openDetectedDraft(id) {
-  const stored = await ext.storage.local.get(DETECTED_DRAFTS_KEY);
-  const queue = stored[DETECTED_DRAFTS_KEY] || [];
-  const draft = queue.find(item => item?.id === id);
-  if (!draft) return false;
-  const remaining = removeDetectedDraft(queue, id);
-  await ext.storage.local.set({ [DETECTED_DRAFTS_KEY]: remaining });
-  await refreshDetectedBadge(remaining);
-  try { await ext.notifications?.clear(`${LINKEDIN_NOTIFICATION_PREFIX}${id}`); } catch {}
-  const video = draft.media.find(item => item?.kind === "video");
-  const videoHint = video ? { source: "linkedin", sources: video.sources || null, src: video.url || "" } : null;
-  await openCapturedPost(draft, videoHint);
+  if (!marked) return false;
+  const sent = ext.tabs.sendMessage(candidate.tabId, { type: "MARK_NATIVE_POSTED" });
+  sent?.catch?.(() => {});
   return true;
-}
-
-async function refreshDetectedBadge(queue) {
-  if (!queue) {
-    const stored = await ext.storage.local.get(DETECTED_DRAFTS_KEY);
-    queue = stored[DETECTED_DRAFTS_KEY] || [];
-  }
-  await ext.action?.setBadgeBackgroundColor?.({ color: "#111111" });
-  await ext.action?.setBadgeText?.({ text: detectedBadgeText(queue.length) });
-  await ext.action?.setTitle?.({ title: queue.length ? `${queue.length} detected post${queue.length === 1 ? "" : "s"} ready in Crossposter` : "Open Crossposter" });
 }
 
 function pruneLinkedInCandidates() {
@@ -1395,10 +1362,6 @@ async function clearAllCrossposterData(sessionId, currentTab) {
   nativeSidePanelTabs.set(currentTab.id, currentTab.windowId);
   nativeSidePanelWindows.add(currentTab.windowId);
   await Promise.all([persistCrosspostSessions(), persistNativeSidePanelTabs()]);
-  await refreshDetectedBadge([]);
-  let notifications = null;
-  try { notifications = await ext.notifications?.getAll?.(); } catch {}
-  if (notifications) await Promise.all(Object.keys(notifications).filter(id => id.startsWith(LINKEDIN_NOTIFICATION_PREFIX)).map(id => ext.notifications.clear(id).catch(() => {})));
   notifyTray();
   if (tabsToClose.length) await ext.tabs.remove(tabsToClose).catch(() => {});
   return tabsToClose.length;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Crossposter",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "A free, open-source browser extension to share social media post – text, images, and even video – from one platform to another.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -20,7 +20,6 @@
     "scripting",
     "downloads",
     "clipboardWrite",
-    "notifications",
     "sidePanel",
     "webRequest"
   ],
@@ -44,7 +43,11 @@
     "https://*.fbcdn.net/*",
     "https://www.facebook.com/*",
     "https://web.facebook.com/*",
-    "https://facebook.com/*"
+    "https://facebook.com/*",
+    "https://substack.com/*",
+    "https://substackcdn.com/*",
+    "https://substack-post-media.s3.amazonaws.com/*",
+    "https://stream.mux.com/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
@@ -82,7 +85,8 @@
         "https://threads.com/*",
         "https://www.facebook.com/*",
         "https://web.facebook.com/*",
-        "https://facebook.com/*"
+        "https://facebook.com/*",
+        "https://substack.com/*"
       ]
     }
   ]

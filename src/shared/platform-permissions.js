@@ -12,6 +12,7 @@ export function platformLabel(id) {
     instagram: "Instagram",
     threads: "Threads",
     facebook: "Facebook",
+    substack: "Substack",
     youtube: "YouTube"
   })[id] || id;
 }

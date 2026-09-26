@@ -1,5 +1,16 @@
 export const DRAFT_HISTORY_KEY = "crossposterDraftHistory";
 export const MAX_DRAFT_HISTORY = 20;
+// Handoffs are kept for 14 days. Extension storage never expires on its own,
+// so older entries are dropped whenever history is read or swept.
+export const DRAFT_HISTORY_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+export function expireDraftHistory(history, now = Date.now(), retentionMs = DRAFT_HISTORY_RETENTION_MS) {
+  const previous = Array.isArray(history) ? history.filter(Boolean) : [];
+  const cutoff = now - retentionMs;
+  const next = previous.filter(item => Number(item.savedAt) >= cutoff);
+  const expired = previous.filter(item => !next.includes(item));
+  return { history: next, expired: expired.length, removedMediaIds: mediaIdsNotReferenced(expired, next) };
+}
 
 export function draftHistoryEntry(draft = {}, media = [], savedAt = Date.now()) {
   return {

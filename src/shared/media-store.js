@@ -60,6 +60,24 @@ export async function deleteHandoffMedia(mediaIds = []) {
   await complete;
 }
 
+// Every stored record's id and age, for the retention sweep.
+export async function listHandoffMediaRecords() {
+  const database = await openDatabase();
+  const transaction = database.transaction(STORE_NAME, "readonly");
+  const records = [];
+  await new Promise((resolve, reject) => {
+    const request = transaction.objectStore(STORE_NAME).openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(); return; }
+      records.push({ id: cursor.value.id, createdAt: cursor.value.createdAt });
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error || new Error("The stored media could not be listed."));
+  });
+  return records;
+}
+
 export async function storeHandoffMedia(blob, metadata = {}) {
   if (!blob || !Number(blob.size)) throw new Error("The downloaded media file was empty.");
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;

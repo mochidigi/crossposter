@@ -1,5 +1,12 @@
 (() => {
   const runtime = (globalThis.browser ?? globalThis.chrome).runtime;
+  // Each store ships its own build, and only the Firefox manifest declares
+  // gecko settings. Chrome has also defined `browser` in content scripts
+  // since Chrome 148, so that global no longer identifies Firefox.
+  const isFirefoxBuild = (() => {
+    try { return Boolean(runtime.getManifest?.()?.browser_specific_settings?.gecko); }
+    catch { return false; }
+  })();
   try { globalThis.CrossposterContent?.dispose?.(); } catch {}
   document.querySelectorAll?.("[data-crossposter-inline-action], [data-crossposter-menu-action]").forEach(node => node.remove());
   document.querySelector?.("#crossposter-inline-action-styles")?.remove();
@@ -635,9 +642,8 @@
       // Firefox is the exception: a content-script ClipboardEvent's data does
       // not cross the Xray boundary into page editors (Threads' Lexical never
       // sees it), so there the paste must be verified and the insertText
-      // fallback kept. Firefox content scripts are detected by the `browser`
-      // global, which Chrome does not define.
-      if (options.fallback === false && !globalThis.browser?.runtime) return true;
+      // fallback kept (see isFirefoxBuild).
+      if (options.fallback === false && !isFirefoxBuild) return true;
       await waitForElement(() => composerHasText(element) ? element : null, options.timeoutMs || 1800);
     } catch {}
     if (composerHasText(element)) return true;
@@ -668,7 +674,7 @@
     if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) {
       // Plain fields take the value directly; nothing can be appended twice.
       inserted = setComposerText(field, value);
-    } else if (globalThis.browser?.runtime) {
+    } else if (isFirefoxBuild) {
       // Firefox: a content-script ClipboardEvent is not a dependable route
       // into page editors, and the DOM read-back can lag, so use the one
       // directly observable native insertion and trust it (see Threads).
