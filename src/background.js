@@ -3,7 +3,7 @@ import { isHandoffStage } from "./shared/handoff.js";
 import { createDraft } from "./shared/draft.js";
 import { resolveReshareMedia } from "./shared/downloaders.js";
 import { nativeDestination } from "./shared/destinations.js";
-import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
+import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, isSidePanelUnavailableError, isTabGroupingUnsupportedError, settleWithin, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { expandCapturedLinks } from "./shared/links.js";
 import { clearHandoffMedia, deleteHandoffMedia, listHandoffMediaRecords, readHandoffMediaChunk } from "./shared/media-store.js";
@@ -35,6 +35,16 @@ let platformContentScriptSyncQueue = Promise.resolve();
 const closingCrosspostWindows = new Set();
 const suppressPanelCloseUntil = new Map();
 const pendingLinkedInPublishes = new Map();
+const TAB_GROUP_TIMEOUT_MS = 3000;
+const TAB_GROUP_TIMEOUT_ERROR = "This browser did not respond to tab grouping.";
+// Chromium forks without Chrome's tab strip (Arc, Dia) expose the tab-group
+// API but hang or refuse it. Remember that for the browser session, not just
+// this worker, so each Compose does not wait out the timeout again.
+const TAB_GROUPS_UNSUPPORTED_KEY = "crossposterTabGroupsUnsupported";
+let tabGroupsUnsupported = false;
+const tabGroupSupportReady = (ext.storage.session?.get(TAB_GROUPS_UNSUPPORTED_KEY) || Promise.resolve({}))
+  .then(stored => { if (stored?.[TAB_GROUPS_UNSUPPORTED_KEY] === true) tabGroupsUnsupported = true; })
+  .catch(() => {});
 const linkedInVideoRequests = new Map();
 ext.windows.onRemoved?.addListener(windowId => { if (windowId === trayWindowId) trayWindowId = null; });
 ext.tabs.onCreated?.addListener(tab => {
@@ -847,7 +857,7 @@ async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboa
     session.sourceTabId = tab.id;
     session.lastActiveTabId = tab.id;
     session.tabIds = [tab.id];
-    session.groupId = await groupComposerTabs([tab.id]);
+    session.groupId = await groupComposerTabs([tab.id]).catch(() => null);
     session.updatedAt = Date.now();
     await persistCrosspostSessions(); notifyTray();
     return session;
@@ -879,7 +889,7 @@ async function registerCrosspostComposer(sessionId, tab) {
   session.sourceTabId = tab.id;
   session.lastActiveTabId = tab.id;
   session.tabIds = sessionTabIds(session, [tab.id]);
-  if (!Number.isInteger(session.groupId) || session.groupId < 0) session.groupId = await groupComposerTabs([tab.id]);
+  if (!Number.isInteger(session.groupId) || session.groupId < 0) session.groupId = await groupComposerTabs([tab.id]).catch(() => null);
   session.updatedAt = Date.now();
   await persistCrosspostSessions(); notifyTray();
   return session;
@@ -971,8 +981,12 @@ async function openTraySurface(sender) {
       await ext.sidePanel.open({ windowId });
       return "side-panel";
     } catch (error) {
-      // A Chrome side-panel failure should be reported to the composer. Do not
-      // silently substitute a detached popup window with different behavior.
+      // Browsers without a side panel UI (Arc) still hand off to the native
+      // composers; they just go without the tray.
+      // No side panel means no Chrome tab strip either, so skip tab groups too.
+      if (isSidePanelUnavailableError(error)) { markTabGroupsUnsupported(); return "none"; }
+      // Any other Chrome side-panel failure should be reported to the composer.
+      // Do not silently substitute a detached popup window with different behavior.
       if (scopedSidePanel) throw error;
     }
   }
@@ -1046,7 +1060,7 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
     tabGroupId = await groupComposerTabs(session.tabIds, session.groupId);
     session.groupId = tabGroupId;
   }
-  catch (error) { groupError = error instanceof Error ? error.message : String(error); }
+  catch (error) { if (!tabGroupsUnsupported) groupError = error instanceof Error ? error.message : String(error); }
 
   for (const entry of entries) {
     if (!isCurrentHandoff(session.id, attemptId)) break;
@@ -1073,14 +1087,29 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
 
 async function groupComposerTabs(tabIds, existingGroupId) {
   const groupIds = [...new Set(tabIds.filter(Number.isInteger))];
-  if (!groupIds.length || !ext.tabs.group || !ext.tabGroups?.update) return Number.isInteger(existingGroupId) ? existingGroupId : null;
-  let groupId;
-  if (Number.isInteger(existingGroupId) && existingGroupId >= 0) {
-    try { groupId = await ext.tabs.group({ groupId: existingGroupId, tabIds: groupIds }); }
-    catch { groupId = await ext.tabs.group({ tabIds: groupIds }); }
-  } else groupId = await ext.tabs.group({ tabIds: groupIds });
-  await ext.tabGroups.update(groupId, COMPOSER_GROUP_APPEARANCE);
-  return groupId;
+  await tabGroupSupportReady;
+  if (!groupIds.length || !ext.tabs.group || !ext.tabGroups?.update || tabGroupsUnsupported) return Number.isInteger(existingGroupId) ? existingGroupId : null;
+  try {
+    return await settleWithin((async () => {
+      let groupId;
+      if (Number.isInteger(existingGroupId) && existingGroupId >= 0) {
+        try { groupId = await ext.tabs.group({ groupId: existingGroupId, tabIds: groupIds }); }
+        catch { groupId = await ext.tabs.group({ tabIds: groupIds }); }
+      } else groupId = await ext.tabs.group({ tabIds: groupIds });
+      await ext.tabGroups.update(groupId, COMPOSER_GROUP_APPEARANCE);
+      return groupId;
+    })(), TAB_GROUP_TIMEOUT_MS, TAB_GROUP_TIMEOUT_ERROR);
+  } catch (error) {
+    // Arc never settles tabs.group(); Dia rejects it outright.
+    if ((error instanceof Error && error.message === TAB_GROUP_TIMEOUT_ERROR) || isTabGroupingUnsupportedError(error)) markTabGroupsUnsupported();
+    throw error;
+  }
+}
+
+function markTabGroupsUnsupported() {
+  if (tabGroupsUnsupported) return;
+  tabGroupsUnsupported = true;
+  ext.storage.session?.set({ [TAB_GROUPS_UNSUPPORTED_KEY]: true }).catch(() => {});
 }
 
 function isCurrentHandoff(sessionId, attemptId) {

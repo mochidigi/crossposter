@@ -74,6 +74,27 @@ export function isMissingContentScriptError(error) {
   return /receiving end does not exist|could not establish connection/i.test(errorText(error));
 }
 
+// Rejects with `message` when `promise` has not settled within `milliseconds`.
+// Arc accepts chrome.tabs.group() but never settles it, which would otherwise
+// stall every step queued behind the grouping.
+export function settleWithin(promise, milliseconds, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), milliseconds); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Dia (and Chrome for tabs outside a normal window) refuses tabs.group() with
+// "Grouping is not supported by tabs in this window."
+export function isTabGroupingUnsupportedError(error) {
+  return /grouping is not supported/i.test(errorText(error));
+}
+
+// Chromium forks with their own window UI (Arc) expose chrome.sidePanel but
+// have no side panel to open, so sidePanel.open() rejects with this error.
+export function isSidePanelUnavailableError(error) {
+  return /no active side panel/i.test(errorText(error));
+}
+
 // A frame that does not own the composer stays silent, which Chrome reports
 // as a closed port and Firefox as an undefined response. Both mean "ask
 // again shortly", not "the handoff failed".
