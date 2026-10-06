@@ -199,9 +199,10 @@
         report("fill-text");
         const field = await wait(editor);
         if (expected && !normalizeComposerText(composerText(field))) {
-          // Chrome: a synthetic paste becomes proper paragraphs and linked
-          // URLs in Substack's Tiptap editor. Firefox: one native insertText.
-          await helpers.fillComposerTextOnce(field, composer, String(handoff.text || ""));
+          // A synthetic paste becomes proper paragraphs and linked URLs in
+          // Substack's Tiptap editor, in Firefox too. A native insertText
+          // there made hard breaks that Substack flattened to spaces.
+          await helpers.fillComposerTextOnce(field, composer, String(handoff.text || ""), { method: "paste" });
         }
         report("verify-text");
         if (expected) await wait(() => normalizeComposerText(composerText(editor())) === expected ? current() : null, 10000, 500);

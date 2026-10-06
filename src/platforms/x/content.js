@@ -123,14 +123,16 @@
       // and leaves Draft to reconcile the leaf under the caret with its model;
       // once its link decorator splits the text into several leaves that
       // reconcile truncates or repeats fragments ("t3.gg on X)t3.gg on X)").
-      // A plain-text paste goes through Draft's own model instead.
-      const textInserted = await helpers.pasteComposerText(field, handoff.text || "");
+      // A plain-text paste goes through Draft's own model instead, and turns
+      // blank lines into empty blocks (one paragraph break, not three).
+      const dialog = field.closest("[role='dialog'], dialog");
+      const textInserted = await helpers.fillComposerTextOnce(field, dialog || field, handoff.text || "", { method: "paste" });
       if (!files.length) {
         if (textInserted) report("ready");
         return { ok: true, composerOpened: true, textInserted, mediaInserted: 0, error: "" };
       }
       report("attach");
-      const root = field.closest("[role='dialog'], dialog") || document;
+      const root = dialog || document;
       let mediaInserted = 0;
       try {
         const input = await helpers.waitForElement(() => helpers.findCompatibleFileInput(files, root, root === document), 20000);

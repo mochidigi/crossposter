@@ -635,15 +635,21 @@
     element.focus(); selectComposerContents(element);
     try {
       const transfer = new DataTransfer(); transfer.setData("text/plain", value);
-      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+      // Firefox's ClipboardEvent constructor ignores `clipboardData` and hands
+      // listeners an empty DataTransfer; it fills one from its own `dataType`
+      // and `data` members instead (Chrome ignores those). Without them X's
+      // Draft.js swallowed an empty paste and the insertText fallback put
+      // every paragraph into one block, adding blank lines.
+      element.dispatchEvent(new ClipboardEvent("paste", {
+        bubbles: true, cancelable: true, clipboardData: transfer, dataType: "text/plain", data: value
+      }));
       // Some controlled editors accept the paste but update their readable DOM
       // late. For those editors, a second insertText fallback duplicates the
       // caption; allow the platform adapter to make paste the single attempt.
-      // Firefox is the exception: a content-script ClipboardEvent's data does
-      // not cross the Xray boundary into page editors (Threads' Lexical never
-      // sees it), so there the paste must be verified and the insertText
-      // fallback kept (see isFirefoxBuild).
-      if (options.fallback === false && !isFirefoxBuild) return true;
+      // Firefox keeps the verified fallback for editors that still reject a
+      // synthetic paste (see isFirefoxBuild), unless the caller asked for a
+      // single attempt (fillComposerTextOnce).
+      if (options.fallback === false && (!isFirefoxBuild || options.single)) return true;
       await waitForElement(() => composerHasText(element) ? element : null, options.timeoutMs || 1800);
     } catch {}
     if (composerHasText(element)) return true;
@@ -674,17 +680,20 @@
     if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) {
       // Plain fields take the value directly; nothing can be appended twice.
       inserted = setComposerText(field, value);
-    } else if (isFirefoxBuild) {
-      // Firefox: a content-script ClipboardEvent is not a dependable route
-      // into page editors, and the DOM read-back can lag, so use the one
+    } else if (isFirefoxBuild && options.method !== "paste") {
+      // Firefox: the Lexical editors' DOM read-back can lag, so use the one
       // directly observable native insertion and trust it (see Threads).
       inserted = insertComposerTextOnce(field, value);
     } else if (options.method === "set") {
       inserted = setComposerText(field, value);
     } else {
-      // Chrome Lexical editors accept a synthetic paste; keep it the single
-      // attempt rather than verifying and falling back.
-      inserted = await pasteComposerText(field, value, { fallback: false });
+      // A synthetic paste goes through the editor's own clipboard parser,
+      // which turns blank lines into paragraphs. Keep it the single attempt
+      // rather than verifying and falling back. `method: "paste"` asks for
+      // this in Firefox too, for editors whose paste is known to work there
+      // (Substack's ProseMirror; insertText's newlines become hard breaks
+      // that Substack flattens to spaces).
+      inserted = await pasteComposerText(field, value, { fallback: false, single: true });
     }
     if (inserted && key) insertedComposerText.set(key, value);
     return inserted;
