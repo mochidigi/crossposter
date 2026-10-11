@@ -507,11 +507,18 @@ input, select { color: var(--ink); background: var(--surface); }
 .welcome-card h1 { margin-bottom: 6px; }
 .welcome-card .lead { font-size: 16px; color: var(--text-soft); }
 .welcome-card .fineprint { text-align: left; }
-.welcome-card ul.site-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px 14px; margin: 18px 0; padding: 0; list-style: none; }
-.welcome-card ul.site-list li { padding: 8px 10px; border: 1px solid var(--line-faint); font-size: 14px; }
-.welcome-card ul.site-list li.granted { border-color: var(--line); }
-.welcome-card ul.site-list li.granted::before { content: "\2713 "; }
-.welcome-card ul.site-list li.missing::before { content: "\25CB "; color: var(--text-muted); }
+/* A status readout, not a picker: no boxes or radio-like marks. Each site is
+   its name over a dot and a word, like the composer's handoff rows. */
+.welcome-card .site-list-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 22px 0 0; padding-bottom: 8px; border-bottom: 1px solid var(--line-faint); font-size: 13px; }
+.welcome-card .site-list-title { font-weight: 700; }
+.welcome-card .site-list-count { color: var(--text-muted); }
+.welcome-card ul.site-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px 18px; margin: 14px 0 20px; padding: 0; list-style: none; }
+.welcome-card ul.site-list li { display: grid; gap: 1px; min-width: 0; }
+.welcome-card .site-name { font-size: 14px; font-weight: 650; }
+.welcome-card .site-state { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 13px; }
+.welcome-card .site-state::before { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--line-soft); content: ""; }
+.welcome-card li.granted .site-state { color: var(--text-soft); }
+.welcome-card li.granted .site-state::before { background: var(--success); }
 .welcome-card .welcome-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
 .welcome-card .welcome-actions .primary { min-width: 220px; }
 .welcome-card .errors:empty { display: none; }

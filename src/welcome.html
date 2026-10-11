@@ -3,7 +3,8 @@
   <div class="eyebrow">Crossposter</div>
   <h1>Allow site access</h1>
   <p class="lead">Crossposter reads the post you right-click and fills each network’s own composer. To do that it needs access to the social sites and their media servers.</p>
-  <ul id="siteList" class="site-list" aria-label="Sites Crossposter needs access to"></ul>
+  <div class="site-list-head"><span id="siteListTitle" class="site-list-title">Site access</span><span id="siteCount" class="site-list-count"></span></div>
+  <ul id="siteList" class="site-list" aria-labelledby="siteListTitle"></ul>
   <p id="error" class="errors" role="alert"></p>
   <div class="welcome-actions"><button id="allow" class="primary" type="button">Allow site access</button><button id="later" class="secondary" type="button">Not now</button></div>
   <p class="fineprint" id="hint">Nothing is read until you invoke Crossposter, and nothing leaves your browser unless you choose to send feedback or diagnostics. You can change site access at any time in your browser’s add-on settings.</p>

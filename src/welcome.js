@@ -2,6 +2,7 @@ import { ext } from "./shared/browser.js";
 import { allPlatformIds, incompletePlatformPermissions, missingSitePlatforms, platformLabel, requestCompletePlatformPermissions, SITE_ACCESS_DISMISSED_KEY } from "./shared/platform-permissions.js";
 
 const list = document.querySelector("#siteList");
+const count = document.querySelector("#siteCount");
 const allow = document.querySelector("#allow");
 const later = document.querySelector("#later");
 const error = document.querySelector("#error");
@@ -34,13 +35,23 @@ async function resumeCapture() {
 async function render() {
   missingPlatforms = await missingSitePlatforms(ext.permissions, manifest);
   const missing = new Set(missingPlatforms);
-  list.replaceChildren(...allPlatformIds(manifest).map(platformId => {
+  const platformIds = allPlatformIds(manifest);
+  // A read-only status list: the button requests every missing site at once.
+  list.replaceChildren(...platformIds.map(platformId => {
+    const granted = !missing.has(platformId);
     const item = document.createElement("li");
-    item.className = missing.has(platformId) ? "missing" : "granted";
-    item.textContent = platformLabel(platformId);
+    item.className = granted ? "granted" : "missing";
+    const name = document.createElement("span");
+    name.className = "site-name";
+    name.textContent = platformLabel(platformId);
+    const state = document.createElement("span");
+    state.className = "site-state";
+    state.textContent = granted ? "Allowed" : "Not allowed";
+    item.append(name, state);
     return item;
   }));
   const done = !missing.size;
+  count.textContent = done ? "All allowed" : `${platformIds.length - missing.size} of ${platformIds.length} allowed`;
   allow.hidden = done;
   later.textContent = done ? "Close" : resuming ? "Cancel crosspost" : "Not now";
   if (done && !resuming) {
