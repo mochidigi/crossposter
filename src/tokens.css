@@ -1,0 +1,61 @@
+/* Color tokens shared by every extension page (styles.css, tray.css). The
+   pages follow the browser's light or dark appearance. */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f4f1;
+  --surface: #fff;
+  --surface-muted: #f4f4f1;
+  --surface-sunken: #ececea;
+  --ink: #111;
+  --ink-inverse: #fff;
+  --ink-hover: #2a2a2a;
+  --text-soft: #333;
+  --text-muted: #626262;
+  --line: #111;
+  --line-soft: #c8c8c3;
+  --line-faint: #ddd;
+  --accent: #174b34;
+  --accent-hover: #0f3525;
+  --on-accent: #fff;
+  --danger: #a12424;
+  --danger-text: #7a1a13;
+  --warning: #8a5300;
+  --warning-bg: #fffbe6;
+  --success: #147a3d;
+  --scrim: rgb(17 17 17 / 68%);
+  --shadow: rgb(17 17 17 / 28%);
+  --media-bg: #111;
+  --stage-bg: #252525;
+  /* Network logos are drawn for a light background in both themes. */
+  --network-tile: #fff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121211;
+    --surface: #1c1c1b;
+    --surface-muted: #232322;
+    --surface-sunken: #2b2b29;
+    --ink: #f0f0eb;
+    --ink-inverse: #121211;
+    --ink-hover: #d6d6d0;
+    --text-soft: #d2d2cc;
+    --text-muted: #a8a8a2;
+    --line: #a3a39d;
+    --line-soft: #4b4b48;
+    --line-faint: #3a3a38;
+    --accent: #2a6f4f;
+    --accent-hover: #34845f;
+    --danger: #ff8f84;
+    --danger-text: #ffb4ab;
+    --warning: #f0b45a;
+    --warning-bg: #3a3318;
+    --success: #4fbf7a;
+    --scrim: rgb(0 0 0 / 72%);
+    --shadow: rgb(0 0 0 / 50%);
+    --network-tile: #f0f0eb;
+  }
+}
+
+/* `hidden` must win over the display a component class sets. */
+[hidden] { display: none !important; }

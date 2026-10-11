@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Crossposter handoff</title>
+  <title>Crossposter sidebar</title>
+  <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="tray.css">
 </head>
 <body>
-  <header class="tray-head"><img src="icons/icon-32.png" alt=""><div><strong>Crossposter</strong><span>Native handoff</span></div></header>
   <main>
-    <p class="close-warning">Closing this sidebar closes all open crosspost tab groups.</p>
     <div id="sessions" class="sessions" aria-label="Open crossposts"></div>
-    <p id="status" class="status">Waiting for content…</p>
-    <div id="targets" class="targets" hidden></div>
-    <section id="empty" class="empty"><p>Prepare a post in Crossposter, choose your destinations, then select <b>Continue</b>.</p></section>
+    <p id="status" class="status" role="status" hidden></p>
+    <ol id="targets" class="handoff-status" aria-label="Destinations" hidden></ol>
+    <div id="reportActions" class="report-actions" hidden></div>
+    <section id="empty" class="empty"><p id="emptyNone">No crossposts are open. Prepare a post in Crossposter, choose your destinations, then select <b>Continue</b>.</p><p id="emptyIdle" hidden>This crosspost hasn’t been sent yet. Choose destinations in Compose, then select <b>Continue</b>.</p></section>
     <section id="content" hidden>
       <div id="textSection" hidden>
         <h2>Text</h2>
@@ -27,6 +27,7 @@
       </div>
     </section>
   </main>
+  <footer class="tray-foot"><p id="closeWarning" class="close-warning" hidden>Closing this sidebar closes all open crosspost tab groups.</p><button id="sendFeedback" class="link-button" type="button">Send feedback</button></footer>
   <script type="module" src="tray.js"></script>
 </body>
 </html>

@@ -1,0 +1,58 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Send feedback · Crossposter</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="styles.css"></head>
+<body><main class="feedback-card">
+  <div class="feedback-brand"><img src="icons/icon-32.png" alt=""> Crossposter</div>
+  <h1>Feedback</h1>
+  <p class="feedback-lead">Report a problem or suggest an idea. Every message is read.</p>
+
+  <form id="feedbackForm" novalidate>
+    <section id="attached" class="feedback-attached" hidden>
+      <strong>Crossposter attached details about this problem</strong>
+      <p id="attachedProblem"></p>
+      <p id="attachedEnvironment" class="feedback-muted"></p>
+    </section>
+
+    <fieldset class="feedback-group">
+      <legend class="field-label">What’s this about?</legend>
+      <div class="feedback-choices">
+        <label><input type="radio" name="category" value="problem" checked><span>A problem</span></label>
+        <label><input type="radio" name="category" value="idea"><span>An idea</span></label>
+        <label><input type="radio" name="category" value="other"><span>Something else</span></label>
+      </div>
+    </fieldset>
+
+    <div class="feedback-group">
+      <label class="field-label" for="message" id="messageLabel">What happened?</label>
+      <textarea id="message" maxlength="5000" placeholder="What were you doing, what did you expect, and what happened instead?"></textarea>
+      <p class="feedback-hint">Please don’t include passwords or other private information.</p>
+    </div>
+
+    <section id="diagnostics" class="feedback-diagnostics" hidden>
+      <label class="feedback-check"><input type="checkbox" id="includeReport" checked> Include the diagnostic details</label>
+      <p class="feedback-hint" id="diagnosticsSummary">Your Crossposter and browser versions and language, and which networks you have enabled.</p>
+      <details>
+        <summary>See exactly what will be sent</summary>
+        <pre id="reportJson"></pre>
+        <details id="outlineDetails" hidden>
+          <summary id="outlineSummary">Page outline</summary>
+          <pre id="outlinePreview"></pre>
+        </details>
+      </details>
+    </section>
+
+    <div class="feedback-actions">
+      <button class="primary" type="submit" id="send">Send feedback</button>
+      <p id="status" class="feedback-status" role="status" aria-live="polite"></p>
+    </div>
+  </form>
+
+  <section id="thanks" class="feedback-thanks" hidden tabindex="-1">
+    <h2>Thanks, it’s on its way.</h2>
+    <p>Your feedback was sent.</p>
+    <p>Reference: <span class="feedback-ref" id="reference"></span></p>
+    <button id="closeTab" class="secondary" type="button">Close this tab</button>
+  </section>
+
+  <p class="feedback-privacy">Nothing is sent until you press <b>Send feedback</b>. It then goes to Crossposter’s server
+  (crossposter.mochi.is), is used only to fix problems and improve Crossposter, and is deleted after 180 days. Your IP
+  address and cookies are not stored with it. <a href="https://crossposter.mochi.is/privacy#feedback" target="_blank" rel="noopener">Privacy policy</a></p>
+</main><script type="module" src="feedback.js"></script></body></html>

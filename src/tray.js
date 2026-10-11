@@ -1,8 +1,8 @@
 import { ext } from "./shared/browser.js";
-import { nativeDestination } from "./shared/destinations.js";
 import { populateFileDrag } from "./shared/drag.js";
 import { getHandoffMedia } from "./shared/media-store.js";
-import { composerNotFound, composerNotFoundHint, handoffStageText } from "./shared/handoff.js";
+import { hasReportableHandoffError } from "./shared/feedback.js";
+import { handoffNetworkStatuses, handoffStatusRow, handoffSummary } from "./shared/handoff-status.js";
 
 const status = document.querySelector("#status"), empty = document.querySelector("#empty"), content = document.querySelector("#content");
 const textSection = document.querySelector("#textSection"), textCard = document.querySelector("#textCard"), copyButton = document.querySelector("#copyText");
@@ -10,6 +10,8 @@ const mediaSection = document.querySelector("#mediaSection"), mediaBox = documen
 const targets = document.querySelector("#targets");
 const mediaHint = document.querySelector("#mediaHint");
 const sessionsBox = document.querySelector("#sessions");
+const reportActions = document.querySelector("#reportActions");
+const closeWarning = document.querySelector("#closeWarning"), emptyNone = document.querySelector("#emptyNone"), emptyIdle = document.querySelector("#emptyIdle");
 const panelWindowId = (await ext.windows.getCurrent().catch(() => null))?.id;
 let currentText = "", files = [], objectUrls = [];
 let renderGeneration = 0, mediaCacheKey = "";
@@ -22,6 +24,16 @@ ext.runtime.onMessage.addListener(message => {
 
 const initial = await ext.runtime.sendMessage({ type: "GET_CROSSPOST_SESSIONS", windowId: panelWindowId }).catch(() => null);
 renderSessions(initial).catch(showRenderError);
+
+document.querySelector("#sendFeedback").onclick = () => openFeedback("manual");
+
+// Opens Crossposter's feedback form in a tab; nothing is sent from here.
+function openFeedback(kind, network = "") {
+  const fallback = "The feedback form could not be opened.";
+  ext.runtime.sendMessage({ type: "OPEN_FEEDBACK", kind, network, surface: "tray", sessionId: selectedSessionId, windowId: panelWindowId })
+    .then(response => { if (!response?.ok) showStatus(response?.error || fallback); })
+    .catch(() => { showStatus(fallback); });
+}
 
 copyButton.onclick = async () => {
   await copyText(currentText);
@@ -47,6 +59,8 @@ async function renderSessions(payload = {}) {
   if (activeId) selectedSessionId = activeId;
   else if (!sessions.some(session => session.id === selectedSessionId)) selectedSessionId = sessions.at(-1)?.id || "";
   sessionsBox.replaceChildren(...sessions.map(sessionCard));
+  // The warning only matters while there is something to close.
+  closeWarning.hidden = !sessions.length;
   const selected = sessions.find(session => session.id === selectedSessionId);
   await render(selected?.handoff);
 }
@@ -64,7 +78,7 @@ function sessionCard(session, index) {
     selectedSessionId = session.id;
     await renderSessions({ sessions, activeSessionId: session.id });
     const response = await ext.runtime.sendMessage({ type: "ACTIVATE_CROSSPOST_SESSION", sessionId: session.id }).catch(() => null);
-    if (!response?.ok) status.textContent = response?.error || "This crosspost could not be opened.";
+    if (!response?.ok) showStatus(response?.error || "This crosspost could not be opened.");
   };
   card.append(select);
   if (session.id === selectedSessionId) {
@@ -72,7 +86,7 @@ function sessionCard(session, index) {
     close.title = `Close Crosspost ${index + 1}`; close.setAttribute("aria-label", `Close Crosspost ${index + 1}`);
     close.onclick = async () => {
       const response = await ext.runtime.sendMessage({ type: "CLOSE_CROSSPOST_SESSION", sessionId: session.id }).catch(() => null);
-      if (!response?.ok) status.textContent = response?.error || "This crosspost could not be closed.";
+      if (!response?.ok) showStatus(response?.error || "This crosspost could not be closed.");
     };
     card.append(close);
   }
@@ -83,9 +97,10 @@ async function render(handoff) {
   const generation = ++renderGeneration;
   if (!handoff || handoff.state === "idle") {
     releaseUrls(); targets.hidden = true; targets.replaceChildren();
+    renderReportActions(null);
     empty.hidden = false; content.hidden = true;
-    status.classList.remove("error");
-    status.textContent = sessions.length ? "This crosspost is ready in Compose." : "No crossposts are open."; return;
+    emptyNone.hidden = sessions.length > 0; emptyIdle.hidden = !sessions.length;
+    status.hidden = true; status.classList.remove("error"); return;
   }
   releaseUrls();
   currentText = handoff.text || "";
@@ -96,35 +111,61 @@ async function render(handoff) {
   if (generation !== renderGeneration) return;
   files = loadedFiles;
   empty.hidden = true; content.hidden = false;
-  const destinationLabels = (handoff.networks || []).map(nativeDestination).filter(Boolean);
-  targets.hidden = !destinationLabels.length;
-  const resultsByNetwork = new Map((handoff.results || []).map(result => [result.network, result]));
-  const postedNetworks = new Set(handoff.postedNetworks || []);
-  targets.replaceChildren(...destinationLabels.map(destination => targetButton(destination, resultsByNetwork.get(destination.id), postedNetworks.has(destination.id))));
-  const targetNames = destinationLabels.map(destination => destination.label).join(" or ");
-  mediaHint.textContent = `Drag a file directly into ${targetNames || "the destination"}’s upload area.`;
+  const statuses = handoffNetworkStatuses(handoff, { copyFrom: "from below" });
+  targets.hidden = !statuses.length;
+  targets.replaceChildren(...statuses.map(item => handoffStatusRow(item, {
+    openTab: row => activateComposerTab(row.tabId, row.label),
+    retry: row => retryDestination(row),
+    report: row => openFeedback("error", row.network)
+  })));
+  mediaHint.textContent = statuses.length === 1
+    ? `Drag a file into ${statuses[0].label}’s upload area.`
+    : "Drag a file into each composer’s upload area.";
   textSection.hidden = !currentText; textCard.textContent = currentText;
   mediaSection.hidden = !files.length; mediaBox.replaceChildren();
   files.forEach(file => mediaBox.appendChild(mediaCard(file, [file])));
   if (files.length > 1) mediaBox.appendChild(mediaCard(null, files));
-  status.textContent = statusText(handoff);
+  status.hidden = false;
+  status.textContent = statusText(handoff, statuses);
   status.classList.toggle("error", handoffNeedsAttention(handoff));
+  renderReportActions(handoff);
+}
+
+// Destination failures carry their own Report button on their row; this
+// covers a crosspost-level failure (the handoff itself, or its media).
+// Signed-out destinations and other things the user fixes on the site get
+// no prompt (see isReportableFailure).
+function renderReportActions(handoff) {
+  const buttons = hasReportableHandoffError(handoff) ? [reportButton("Report this problem", "")] : [];
+  reportActions.replaceChildren(...buttons);
+  reportActions.hidden = !buttons.length;
+}
+
+function reportButton(text, network) {
+  const button = document.createElement("button");
+  button.className = "report-button"; button.type = "button"; button.textContent = text;
+  button.title = "Opens Crossposter’s feedback form with details for fixing this. Nothing is sent until you press Send there.";
+  button.onclick = () => openFeedback("error", network);
+  return button;
+}
+
+// A message in the status line, which is hidden while nothing is open.
+function showStatus(text) {
+  status.hidden = false;
+  status.textContent = text;
 }
 
 function showRenderError(error) {
-  status.textContent = error instanceof Error ? error.message : "The handoff media could not be loaded.";
+  showStatus(error instanceof Error ? error.message : "The handoff media could not be loaded.");
 }
 
-function targetButton(destination, handoffResult, posted = false) {
-  const button = document.createElement("button");
-  button.className = `target${posted ? " posted" : ""}`; button.type = "button";
-  const image = document.createElement("img"); image.src = destination.icon; image.alt = "";
-  button.append(image, destination.label, ...(posted ? [" ✓"] : []));
-  const tabId = handoffResult?.tabId;
-  button.disabled = !Number.isInteger(tabId);
-  button.title = button.disabled ? `${destination.label} is still opening` : `Switch to ${destination.label}`;
-  if (!button.disabled) button.onclick = () => activateComposerTab(tabId, destination.label);
-  return button;
+// Fills one destination again. The rows follow the session updates while it
+// runs, so only a failure to start needs saying here.
+function retryDestination(row) {
+  const failed = message => showStatus(message || `${row.label} could not be retried.`);
+  ext.runtime.sendMessage({ type: "RETRY_NATIVE_HANDOFF", sessionId: selectedSessionId, network: row.network })
+    .then(response => { if (!response?.ok) failed(response?.error); })
+    .catch(() => failed());
 }
 
 async function activateComposerTab(tabId, label) {
@@ -132,7 +173,7 @@ async function activateComposerTab(tabId, label) {
     const tab = await ext.tabs.update(tabId, { active: true });
     if (Number.isInteger(tab.windowId)) await ext.windows.update(tab.windowId, { focused: true });
   } catch {
-    status.textContent = `${label}’s composer tab is no longer open.`;
+    showStatus(`${label}’s composer tab is no longer open.`);
   }
 }
 
@@ -151,41 +192,20 @@ async function fileForMedia(item) {
   return mediaCache.get(item.mediaId);
 }
 
-function statusText(handoff) {
+// The crosspost as a whole; each destination's state is on its own row.
+function statusText(handoff, statuses) {
   if (handoff.state === "preparing") return "Preparing the draggable files…";
-  if (handoff.state === "filling") {
-    const label = nativeDestination(handoff.currentNetwork)?.label || "the native composer";
-    return (handoff.composerProgress?.network === handoff.currentNetwork && handoffStageText(handoff.composerProgress?.stage, label))
-      || `Opening and filling ${label}…`;
-  }
-  if (handoff.state === "error") return handoff.error || "Open the destination manually and use this tray.";
-  if (handoff.mediaErrors?.length) return `Media could not be prepared: ${handoff.mediaErrors.join(" ")}`;
-  const posted = handoff.postedNetworks || [];
-  if (posted.length && posted.length === (handoff.networks || []).length) return "Posted to every destination in this crosspost.";
-  if (posted.length) return `Posted to ${posted.length} of ${(handoff.networks || []).length} destinations.`;
-  const results = handoff.results || [];
-  const failures = handoffFailures(handoff);
-  if (failures.length) return failures.map(describeFailure).join(" ");
-  const filled = results.filter(item => item.result?.textInserted || item.result?.mediaInserted).length;
-  if (filled === results.length && filled) return `${filled} composer${filled === 1 ? "" : "s"} filled. Review and post when ready.`;
-  if (filled) return `${filled} composer${filled === 1 ? "" : "s"} filled. Use this sidebar for the remaining destinations.`;
-  const labels = (handoff.networks || []).map(nativeDestination).filter(Boolean).map(destination => destination.label).join(" or ");
-  return labels ? `Drag or copy this content into ${labels}’s composer.` : "Drag or copy this content into the destination composer.";
+  if (handoff.state === "error") return handoff.error || "Open the destination manually and use this sidebar.";
+  const summary = handoffSummary(handoff, statuses).title;
+  return handoff.mediaErrors?.length ? `${summary}. Media could not be prepared: ${handoff.mediaErrors.join(" ")}` : summary;
 }
 
 function handoffFailures(handoff) {
   return (handoff.results || []).filter(item => item.error || item.result?.error);
 }
 
-// A composer the adapter never found is worth calling out: the page may be
-// logged out, or the site changed its markup and the adapter needs updating.
-function describeFailure(item) {
-  const label = nativeDestination(item.network)?.label || item.network;
-  const message = item.error || item.result?.error;
-  return composerNotFound(item.result) ? `${label}: ${message} ${composerNotFoundHint(label)}` : `${label}: ${message}`;
-}
-
 function handoffNeedsAttention(handoff) {
+  if (handoff.retrying) return false;
   if (handoff.state === "error" || handoff.mediaErrors?.length) return true;
   return !["preparing", "filling"].includes(handoff.state) && handoffFailures(handoff).length > 0;
 }
@@ -223,7 +243,7 @@ async function copyImageToClipboard(file, button) {
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
     button.textContent = "Copied";
   } catch (error) {
-    status.textContent = error instanceof Error ? error.message : "The image could not be copied.";
+    showStatus(error instanceof Error ? error.message : "The image could not be copied.");
   } finally {
     setTimeout(() => {
       if (!button.isConnected) return;

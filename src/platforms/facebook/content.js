@@ -12,18 +12,48 @@
   // trigger button, and icon shortcuts (live, photo/video, feeling).
   function composerLauncher(helpers) {
     const outsideDialog = element => !element.closest("[role='dialog']");
-    const regionTrigger = helpers.queryAllDeep("[role='region'], [data-pagelet$='Composer']")
-      .filter(region => outsideDialog(region) && region.querySelector?.("a[href]"))
-      .map(region => {
-        const buttons = helpers.queryAllDeep("[role='button']", region).filter(element => helpers.isVisible(element));
-        const text = buttons.filter(element => textOnly(element, helpers));
-        return buttons.length >= 3 && text.length === 1 && buttons.length - text.length >= 2 ? text[0] : null;
-      })
-      .find(Boolean);
-    return regionTrigger
+    const region = composerRegion(helpers);
+    return (region && regionTrigger(region, helpers))
       || helpers.queryAllDeep("[role='button']")
         .find(element => helpers.isVisible(element) && outsideDialog(element) && /what.s on your mind/i.test(element.innerText || ""))
       || null;
+  }
+
+  function composerRegion(helpers) {
+    return helpers.queryAllDeep("[role='region'], [data-pagelet$='Composer']")
+      .find(region => !region.closest("[role='dialog']") && region.querySelector?.("a[href]") && regionTrigger(region, helpers)) || null;
+  }
+
+  function regionTrigger(region, helpers) {
+    const buttons = helpers.queryAllDeep("[role='button']", region).filter(element => helpers.isVisible(element));
+    const text = buttons.filter(element => textOnly(element, helpers));
+    return buttons.length >= 3 && text.length === 1 && buttons.length - text.length >= 2 ? text[0] : null;
+  }
+
+  // Profile links come as /<username>, /profile.php?id=<id>, or in groups as
+  // /groups/<group>/user/<id>/, each with varying tracking parameters.
+  const RESERVED_PATHS = new Set(["home.php", "watch", "groups", "marketplace", "gaming", "events", "friends", "pages", "reel", "reels", "stories", "photo", "photo.php", "photos", "videos", "permalink.php", "story.php", "notifications", "messages", "bookmarks", "saved", "me", "settings", "help", "search", "hashtag", "login", "share"]);
+  function facebookProfileIdentity(href) {
+    let url;
+    try { url = new URL(href, location.origin || "https://www.facebook.com"); } catch { return ""; }
+    if (!/(?:^|\.)facebook\.com$/i.test(url.hostname)) return "";
+    const path = url.pathname.replace(/\/+$/, "");
+    if (path === "/profile.php") return url.searchParams.get("id") ? `id:${url.searchParams.get("id")}` : "";
+    const numeric = path.match(/^\/(?:groups\/[^/]+\/user|people\/[^/]+)\/(\d+)$/);
+    if (numeric) return `id:${numeric[1]}`;
+    const vanity = path.match(/^\/([A-Za-z0-9.]+)$/);
+    return vanity && !RESERVED_PATHS.has(vanity[1].toLowerCase()) ? vanity[1].toLowerCase() : "";
+  }
+
+  // The post's author link against the viewer's own timeline link, which the
+  // feed's "create a post" card leads with. Pages without that card (a single
+  // post, a Page) leave the viewer unknown, so nothing counts as their own.
+  function facebookIsOwnPost({ post, helpers }) {
+    const author = helpers.queryAllDeep("[data-ad-rendering-role='profile_name'] a[href]", post)[0];
+    const authoredBy = facebookProfileIdentity(author?.getAttribute?.("href"));
+    const region = authoredBy ? composerRegion(helpers) : null;
+    const signedInAs = region ? [...region.querySelectorAll("a[href]")].map(link => facebookProfileIdentity(link.getAttribute("href"))).find(Boolean) : "";
+    return Boolean(authoredBy && signedInAs && authoredBy === signedInAs);
   }
 
   // The create-post dialog ends with its submit button, the last text-only
@@ -41,6 +71,7 @@
     matches: host => host === "facebook.com" || host.endsWith(".facebook.com"),
     postSelectors: ["[data-virtualized]"],
     sourceAuthor: facebookSourceAuthor,
+    isOwnPost: facebookIsOwnPost,
     captureText: facebookCaptureText,
     captureMedia: facebookCaptureMedia,
     videoInfo: facebookVideoInfo,

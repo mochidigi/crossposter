@@ -9,7 +9,8 @@ import { muxMp4Tracks } from "./shared/hls.js";
 import { isStreamMedia, prepareStreamMedia } from "./shared/media-preparation.js";
 import { deleteHandoffMedia, getHandoffMedia, storeHandoffMedia } from "./shared/media-store.js";
 import { DRAFT_HISTORY_KEY, draftHistoryEntry, expireDraftHistory, removeDraftHistoryEntry, upsertDraftHistory } from "./shared/draft-history.js";
-import { continueLabel, isNativeDestinationDisabled, NATIVE_DESTINATIONS, selectedNativeDestinations } from "./shared/destinations.js";
+import { continueLabel, NATIVE_DESTINATIONS, nativeDestinationBlocker, selectedNativeDestinations } from "./shared/destinations.js";
+import { handoffNetworkStatuses, handoffStatusRow, handoffSummary } from "./shared/handoff-status.js";
 import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinations, inlineActionsEnabled, KNOWN_PLATFORMS_KEY, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY, storedEnabledPlatforms } from "./shared/preferences.js";
 import { isFreshComposerUrl } from "./shared/compose-mode.js";
 import { CROSSPOST_SESSIONS_KEY, crosspostSessionIdFromUrl } from "./shared/crosspost-sessions.js";
@@ -26,6 +27,9 @@ showInfo.onclick = async () => {
 };
 const composeUrl = new URL(location.href);
 const sessionId = crosspostSessionIdFromUrl(location.href);
+// Declared before the awaits below: Feedback can be clicked while Compose loads.
+let toastTimer = 0;
+document.querySelector("#feedbackOpen").onclick = () => openFeedback("manual");
 // A fresh compose has no captured text to wait for — show the real placeholder
 // immediately instead of the "Loading…" hint (knowable synchronously from the URL).
 if (isFreshComposerUrl(location.href)) document.querySelector("#postText").placeholder = "What do you want to share?";
@@ -86,6 +90,8 @@ const imageDialog = document.querySelector("#imageDialog"), imageCanvas = docume
 const imageCropControls = document.querySelector("#imageCropControls"), imageColor = document.querySelector("#imageColor"), imageError = document.querySelector("#imageError");
 const composeMain = document.querySelector("main"), composeTopbar = document.querySelector(".topbar");
 const handoffOverlay = document.querySelector("#handoffOverlay"), handoffCancel = document.querySelector("#handoffCancel"), handoffCancelError = document.querySelector("#handoffCancelError");
+const handoffTitle = document.querySelector("#handoffOverlayTitle"), handoffLead = document.querySelector("#handoffOverlayLead"), handoffStatus = document.querySelector("#handoffStatus");
+const handoffNotice = document.querySelector("#handoffNotice"), handoffNew = document.querySelector("#handoffNew"), handoffActionsNote = document.querySelector("#handoffActionsNote");
 const permissionDialog = document.querySelector("#permissionDialog"), permissionTitle = document.querySelector("#permissionTitle"), permissionCopy = document.querySelector("#permissionCopy");
 const permissionAllow = document.querySelector("#permissionAllow"), permissionCancel = document.querySelector("#permissionCancel"), permissionError = document.querySelector("#permissionError");
 let clipState = null;
@@ -95,6 +101,17 @@ let clipOperationActive = false;
 let publishBusy = false;
 let publishGeneration = 0;
 let activeHandoffAttemptId = crosspostSession?.handoff?.attemptId || "";
+let handoffFinished = false;
+let settingsSnapshot = "";
+// The background broadcasts every session change; follow this composer's
+// handoff so its status panel shows where each destination stands.
+ext.runtime.onMessage.addListener(message => {
+  if (message?.type !== "CROSSPOST_SESSIONS_UPDATED" || !sessionId) return;
+  const handoff = (message.sessions || []).find(session => session?.id === sessionId)?.handoff;
+  if (!handoff || handoffOverlay.hidden) return;
+  if (handoff.state === "idle") { if (!publishBusy) setHandoffActive(false); return; }
+  renderHandoffPanel(handoff);
+});
 draft.destinations = initialDraftDestinations(draft, stored[DEFAULT_DESTINATIONS_KEY], enabledPlatforms);
 // First paint: text and destinations immediately; media hydration reads blobs
 // from IndexedDB and stays off the critical path.
@@ -129,6 +146,7 @@ document.querySelector("#historyOpen").onclick = openHistory;
 document.querySelector("#historyClose").onclick = closeHistory;
 document.querySelector("#historyDone").onclick = closeHistory;
 historyDialog.addEventListener("cancel", event => { event.preventDefault(); closeHistory(); });
+document.querySelector("#addMedia").onclick = () => document.querySelector("#file").click();
 document.querySelector("#file").onchange = event => {
   for (const file of [...event.target.files].slice(0, 4 - draft.media.length)) {
     const url = URL.createObjectURL(file); objectUrls.push(url); draft.media.push({ kind: file.type.startsWith("video") ? "video" : "image", url, local: true, filename: file.name });
@@ -185,10 +203,14 @@ document.addEventListener("keydown", event => {
 });
 document.querySelector("#publish").onclick = publish;
 handoffCancel.onclick = cancelNativeHandoff;
+handoffNew.onclick = startNewPost;
 permissionAllow.onclick = grantSourcePermissions;
 permissionCancel.onclick = cancelPermissionGate;
 permissionDialog.addEventListener("cancel", event => event.preventDefault());
-setHandoffActive(Boolean(crosspostSession && crosspostSession.handoff?.state !== "idle"));
+if (crosspostSession?.handoff && crosspostSession.handoff.state !== "idle") {
+  setHandoffActive(true);
+  renderHandoffPanel(crosspostSession.handoff);
+}
 
 async function initializeSourcePermissions() {
   const missing = await incompletePlatformPermissions(ext.permissions, [draft.sourceNetwork]);
@@ -280,21 +302,57 @@ async function reconcileCapturedVideoResolution() {
 }
 
 function renderAll() { renderMeta(); renderDestinations(); renderMedia(); }
-function showToast(message) { const toast = document.querySelector("#toast"); toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 4000); }
+// `report` adds a button that opens the feedback form for this error.
+function showToast(message, { report = false } = {}) {
+  const toast = document.querySelector("#toast");
+  toast.replaceChildren(message);
+  if (report) toast.append(reportButton(message, "toast-action", () => toast.classList.remove("show")));
+  toast.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), report ? 9000 : 4000);
+}
+
+function reportButton(error, className, beforeOpen = () => {}) {
+  const button = document.createElement("button");
+  button.type = "button"; button.className = className; button.textContent = "Report this problem";
+  button.title = "Opens Crossposter’s feedback form with details for fixing this. Nothing is sent until you press Send there.";
+  button.onclick = () => { beforeOpen(); openFeedback("error", error); };
+  return button;
+}
+
+// Opens Crossposter's feedback form in a tab; nothing is sent from here.
+function openFeedback(kind, error = "", network = "") {
+  const failed = () => showToast("The feedback form could not be opened.");
+  ext.runtime.sendMessage({ type: "OPEN_FEEDBACK", kind, error, network, surface: "compose", sessionId })
+    .then(response => { if (!response?.ok) failed(); })
+    .catch(failed);
+}
 function renderMeta() {
   document.querySelector("#count").textContent = `${draft.text.length} / 3000`;
-  const label = draft.sourceNetwork === "web" ? "Captured from the web" : `Captured from ${draft.sourceNetwork}`;
-  document.querySelector("#source").textContent = draft.sourceUrl ? label : "Fresh post";
+  const source = document.querySelector("#source");
+  if (!draft.sourceUrl) { source.textContent = "Fresh post"; return; }
+  // Name the network properly and link back to the original post.
+  let host = "";
+  try { host = new URL(draft.sourceUrl).hostname.replace(/^www\./, ""); } catch {}
+  const link = document.createElement("a");
+  link.textContent = draft.sourceNetwork === "web" ? host || "the web" : platformLabel(draft.sourceNetwork);
+  link.title = "Open the original post";
+  if (/^https?:/i.test(draft.sourceUrl)) { link.href = draft.sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer"; }
+  source.replaceChildren("Captured from ", link);
 }
 
 function renderDestinations() {
   const enabled = new Set(enabledPlatforms);
+  // Rebuilding the tiles must not drop keyboard focus from the one in use.
+  const focusedId = document.activeElement?.closest?.("#destinations .destination")?.dataset.id;
   setHtml(destinations, NATIVE_DESTINATIONS.filter(destination => enabled.has(destination.id)).map(destination => {
-    const disabled = isNativeDestinationDisabled(draft, destination.id);
-    const selected = !disabled && draft.destinations.includes(destination.id);
-    return `<label class="destination ${selected ? "selected" : ""} ${disabled ? "disabled" : ""}" data-id="${destination.id}"><span class="network-icon"><img src="${destination.icon}" alt=""></span><b>${escapeAttr(destination.label)}</b><input type="checkbox" ${selected ? "checked" : ""} ${disabled ? "disabled" : ""}></label>`;
+    const blocker = nativeDestinationBlocker(draft, destination.id);
+    const selected = !blocker && draft.destinations.includes(destination.id);
+    const reason = blocker ? `<small>${escapeAttr(blocker)}</small>` : "";
+    return `<label class="destination ${selected ? "selected" : ""} ${blocker ? "disabled" : ""}" data-id="${destination.id}"><span class="network-icon"><img src="${destination.icon}" alt=""></span><span class="destination-copy"><b>${escapeAttr(destination.label)}</b>${reason}</span><input type="checkbox" ${selected ? "checked" : ""} ${blocker ? "disabled" : ""}></label>`;
   }).join(""));
   destinations.querySelectorAll("input").forEach(input => input.onchange = event => { const id = event.target.closest("label").dataset.id; draft.destinations = event.target.checked ? [...new Set([...draft.destinations, id])] : draft.destinations.filter(item => item !== id); renderDestinations(); });
+  if (focusedId) destinations.querySelector(`.destination[data-id="${focusedId}"] input:not(:disabled)`)?.focus();
   renderPublishAction();
 }
 
@@ -308,7 +366,14 @@ function openSettings() {
   settingsInlineActions.checked = showInlineActions;
   settingsError.textContent = "";
   settingsClearError.textContent = "";
+  settingsDialog.querySelector(".settings-danger").open = false;
+  settingsSnapshot = settingsFormState();
   settingsDialog.showModal();
+}
+
+function settingsFormState() {
+  const rows = [...settingsDestinations.querySelectorAll("[data-platform]")].map(row => [row.dataset.platform, row.querySelector("[data-platform-enabled]").checked, row.querySelector("[data-platform-default]").checked]);
+  return JSON.stringify([rows, settingsInlineActions.checked]);
 }
 
 function updatePlatformPreferenceRow(row) {
@@ -317,14 +382,19 @@ function updatePlatformPreferenceRow(row) {
   row.querySelector("[data-platform-default]").disabled = !enabled;
 }
 
-function closeSettings() { if (settingsDialog.open) settingsDialog.close(); }
+// Closing without saving asks first when something was changed.
+function closeSettings({ discard = false } = {}) {
+  if (!settingsDialog.open) return;
+  if (!discard && settingsFormState() !== settingsSnapshot && !confirm("Discard your unsaved changes to Settings?")) return;
+  settingsDialog.close();
+}
 
 function renderComposerMode() {
   const captured = Boolean(draft.sourceUrl);
-  document.querySelector("#composerTitle").textContent = captured ? "Share it your way." : "Compose";
+  document.querySelector("#composerTitle").textContent = captured ? "Edit the crosspost" : "New post";
   document.querySelector("#composerLede").textContent = captured
-    ? "Polish the original, choose your destinations, then continue in each native composer."
-    : "Write what you want to share, choose your destinations, then continue in each native composer";
+    ? "Polish the captured post, choose destinations, then review and post in each network’s own composer."
+    : "Write it once, choose destinations, then review and post in each network’s own composer.";
   if (addLink) addLink.hidden = !captured;
 }
 
@@ -338,7 +408,7 @@ function closeHistory() { if (historyDialog.open) historyDialog.close(); }
 async function renderHistory() {
   const history = await readDraftHistory();
   if (!history.length) {
-    historyList.innerHTML = '<p class="history-empty">No saved handoffs yet. Drafts appear here when you select Continue.</p>';
+    historyList.innerHTML = '<p class="history-empty">No saved crossposts yet. Drafts appear here when you select Continue.</p>';
     return;
   }
   setHtml(historyList, history.map(entry => {
@@ -401,7 +471,7 @@ async function saveSettings() {
   stored[SHOW_INLINE_ACTIONS_KEY] = showInlineActions;
   draft.destinations = initialDraftDestinations(draft, defaultDestinations, enabledPlatforms);
   renderDestinations();
-  closeSettings(); showToast("Platform settings saved.");
+  closeSettings({ discard: true }); showToast("Settings saved.");
 }
 
 async function clearAllData() {
@@ -448,6 +518,8 @@ function renderMedia() {
   document.querySelectorAll("[data-clip]").forEach(button => button.onclick = () => openClipper(Number(button.dataset.clip)));
   document.querySelectorAll("[data-download]").forEach(button => button.onclick = () => downloadVideo(Number(button.dataset.download), button));
   document.querySelectorAll("[data-image-edit]").forEach(button => button.onclick = () => openImageEditor(Number(button.dataset.imageEdit)));
+  // Instagram's tile depends on whether the draft has media.
+  renderDestinations();
 }
 
 async function downloadVideo(index, button) {
@@ -474,7 +546,7 @@ async function downloadVideo(index, button) {
     }
     showToast("Video download started.");
   } catch (error) {
-    showToast(error instanceof Error ? error.message : "The video could not be downloaded.");
+    showToast(error instanceof Error ? error.message : "The video could not be downloaded.", { report: true });
   } finally {
     if (button.isConnected) button.disabled = false;
   }
@@ -490,7 +562,7 @@ async function openClipper(index) {
       await prepareStreamPreview(index, item);
       item = draft.media[index];
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "The video could not be prepared for editing.");
+      showToast(error instanceof Error ? error.message : "The video could not be prepared for editing.", { report: true });
       return;
     }
   }
@@ -755,21 +827,71 @@ function formatTime(seconds) {
 }
 function clamp(value, minimum, maximum) { return Math.max(minimum, Math.min(value, maximum)); }
 function setHandoffActive(active) {
+  const opening = active && handoffOverlay.hidden;
   handoffOverlay.hidden = !active;
   composeMain.inert = active;
   composeTopbar.inert = active;
   document.body.classList.toggle("handoff-active", active);
-  if (!active) handoffCancelError.textContent = "";
+  if (!active) { handoffCancelError.textContent = ""; handoffFinished = false; }
+  // Focus the panel, not its first button: that one closes tabs.
+  if (opening) handoffOverlay.querySelector(".handoff-overlay-card").focus({ preventScroll: true });
+}
+
+// The status panel shown over the composer once Continue is pressed: one row
+// per destination, failures included, and what the user can do next.
+function renderHandoffPanel(handoff) {
+  const statuses = handoffNetworkStatuses(handoff);
+  const summary = handoffSummary(handoff, statuses);
+  handoffFinished = summary.finished;
+  handoffTitle.textContent = summary.title || "Preparing your crosspost…";
+  handoffLead.textContent = summary.lead;
+  handoffStatus.replaceChildren(...statuses.map(status => handoffStatusRow(status, {
+    openTab: row => focusComposerTab(row.tabId, row.label),
+    retry: row => retryDestination(row),
+    report: row => openFeedback("error", row.error || row.detail || row.text, row.network)
+  })));
+  handoffNotice.textContent = [
+    ...(handoff.mediaErrors || []).map(error => `Media: ${error}`),
+    ...(handoff.groupError ? [`Tab group: ${handoff.groupError}`] : [])
+  ].join(" ");
+  handoffNew.hidden = !summary.finished;
+  if (!handoffCancel.disabled) handoffCancel.textContent = cancelLabel();
+  handoffActionsNote.textContent = summary.finished
+    ? "Edit and try again closes this crosspost’s composer tabs first."
+    : "Cancelling closes this crosspost’s composer tabs.";
+}
+
+function cancelLabel() { return handoffFinished ? "Edit and try again" : "Cancel crosspost"; }
+
+async function focusComposerTab(tabId, label) {
+  try {
+    const tab = await ext.tabs.update(tabId, { active: true });
+    if (Number.isInteger(tab?.windowId)) await ext.windows.update(tab.windowId, { focused: true });
+  } catch { showToast(`${label}’s tab is no longer open.`); }
+}
+
+// Fills one destination again; the panel follows the session updates.
+function retryDestination(row) {
+  const failed = message => showToast(message || `${row.label} could not be retried.`);
+  ext.runtime.sendMessage({ type: "RETRY_NATIVE_HANDOFF", sessionId, network: row.network })
+    .then(response => { if (!response?.ok) failed(response?.error); })
+    .catch(() => failed());
+}
+
+async function startNewPost() {
+  const response = await ext.runtime.sendMessage({ type: "OPEN_CROSSPOST_COMPOSER", fresh: true }).catch(() => null);
+  if (!response?.ok) showToast(response?.error || "A new composer could not be opened.");
 }
 
 async function cancelNativeHandoff() {
   ++publishGeneration;
+  const finished = handoffFinished;
   handoffCancel.disabled = true;
-  handoffCancel.textContent = "Cancelling…";
+  handoffCancel.textContent = finished ? "Closing tabs…" : "Cancelling…";
   handoffCancelError.textContent = "";
   const response = await ext.runtime.sendMessage({ type: "CANCEL_NATIVE_HANDOFF", sessionId, attemptId: activeHandoffAttemptId }).catch(error => ({ ok: false, error: error instanceof Error ? error.message : String(error) }));
   handoffCancel.disabled = false;
-  handoffCancel.textContent = "Cancel crosspost";
+  handoffCancel.textContent = cancelLabel();
   if (!response?.ok) {
     handoffCancelError.textContent = response?.error || "The crosspost could not be cancelled.";
     return;
@@ -779,7 +901,7 @@ async function cancelNativeHandoff() {
   document.querySelector("#errors").textContent = "";
   setHandoffActive(false);
   renderPublishAction();
-  showToast("Crossposting cancelled. You can continue editing.");
+  showToast(finished ? "Composer tabs closed. Edit the post, then continue again." : "Crossposting cancelled. You can continue editing.");
 }
 
 async function publish() {
@@ -801,20 +923,26 @@ async function publish() {
   button.disabled = true;
   setHtml(button, `Preparing…${icon("refresh")}`);
   setHandoffActive(true);
+  renderHandoffPanel({ state: "preparing", networks: networkIds });
   // Sidebar APIs require a live user gesture. Open the extension-owned surface
   // before any asynchronous storage or media work, then populate it while the
   // native tabs open.
+  // A declined permission prompt is the user's choice, not a problem to report.
+  let reportable = false;
   try {
     const permissionResult = await hostPermissionRequest;
     if (!permissionResult.ok) {
       const platforms = permissionResult.missing.map(platformLabel).join(", ");
       throw new Error(permissionResult.error || `Allow every requested permission for ${platforms} before continuing.`);
     }
+    reportable = true;
     await openNativeTray(networkIds, attemptId);
   }
   catch (error) {
     if (generation !== publishGeneration) return;
-    box.textContent = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    box.textContent = message;
+    if (reportable) box.append(" ", reportButton(message, "report-link"));
     publishBusy = false; activeHandoffAttemptId = ""; setHandoffActive(false); renderPublishAction(); return;
   }
   if (generation !== publishGeneration) return;
@@ -823,16 +951,14 @@ async function publish() {
   try {
     const handoff = await startNativeHandoff(networkIds, attemptId);
     if (generation !== publishGeneration || handoff.cancelled) return;
-    const failed = (handoff.results || []).filter(result => result.error);
-    box.textContent = [
-      ...failed.map(result => `${label(result.network)}: ${result.error}`),
-      ...(handoff.failures || []).map(error => `Media: ${error}`),
-      ...(handoff.groupError ? [`Tab group: ${handoff.groupError}`] : [])
-    ].join(" ");
-    showToast(`${networkIds.length} native composer${networkIds.length === 1 ? " is" : "s are"} ready for review.`);
   } catch (error) {
-    if (generation === publishGeneration) box.textContent = error instanceof Error ? error.message : String(error);
+    if (generation !== publishGeneration) return;
+    // Shown in the status panel: the composer behind it is inert.
+    renderHandoffPanel({ state: "error", error: error instanceof Error ? error.message : String(error), networks: networkIds });
   }
+  // The broadcast updates may have been missed; render the final state.
+  const settled = await ext.runtime.sendMessage({ type: "GET_CROSSPOST_SESSION", sessionId }).catch(() => null);
+  if (generation === publishGeneration && ["ready", "error"].includes(settled?.session?.handoff?.state)) renderHandoffPanel(settled.session.handoff);
   if (generation !== publishGeneration) return;
   publishBusy = false; renderPublishAction();
   // Native composers are deliberately unobservable after handoff: keep the
@@ -841,7 +967,7 @@ async function publish() {
 }
 async function openNativeTray(networks, attemptId) {
   const response = await ext.runtime.sendMessage({ type: "OPEN_NATIVE_TRAY", sessionId, attemptId, text: draft.text, networks });
-  if (!response?.ok) throw new Error(response?.error || "Could not open the Crossposter handoff tray.");
+  if (!response?.ok) throw new Error(response?.error || "Could not open the Crossposter sidebar.");
   return response;
 }
 

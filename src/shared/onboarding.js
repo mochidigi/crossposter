@@ -1,4 +1,5 @@
 import { setHtml } from "./dom.js";
+import { icon } from "./icons.js";
 
 const slides = [
   {
@@ -6,7 +7,7 @@ const slides = [
     title: "Post everywhere, faster.",
     copy: "Crossposter saves you time posting to multiple social media accounts – right from your browser.",
     art: `<svg viewBox="0 0 520 260" role="img" aria-label="One Crossposter post being sent to UpScrolled, X, LinkedIn, Bluesky, Instagram, and Facebook">
-      <defs><marker id="onboardingArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#111"/></marker></defs>
+      <defs><marker id="onboardingArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="art-arrowhead" d="M0 0 10 5 0 10Z"/></marker></defs>
       <rect class="art-paper" x="140" y="38" width="240" height="184" rx="3"/><path class="art-line" d="M140 74h240"/><circle class="art-fill" cx="163" cy="56" r="6"/><path class="art-line" d="M178 56h52M169 103h182M169 122h148M169 141h169"/><rect class="art-media" x="169" y="162" width="94" height="34" rx="2"/><path class="art-line" d="M278 170h67M278 182h51M278 194h59"/>
       <path class="art-arrow" marker-end="url(#onboardingArrow)" d="M137 92 91 69"/><path class="art-arrow" marker-end="url(#onboardingArrow)" d="M383 92l46-23"/><path class="art-arrow" marker-end="url(#onboardingArrow)" d="M137 168l-46 23"/><path class="art-arrow" marker-end="url(#onboardingArrow)" d="M383 168l46 23"/>
       <path class="art-arrow" marker-end="url(#onboardingArrow)" d="M137 130H96"/><path class="art-arrow" marker-end="url(#onboardingArrow)" d="M383 130h41"/>
@@ -34,11 +35,11 @@ export function setupOnboarding(trigger) {
   const dialog = document.createElement("dialog");
   dialog.className = "onboarding-dialog";
   dialog.setAttribute("aria-labelledby", "onboardingTitle");
-  dialog.innerHTML = `<section class="onboarding-card">
-    <header class="onboarding-head"><span class="onboarding-brand"><img src="icons/icon-32.png" alt="">Getting started</span><button class="onboarding-close" type="button" aria-label="Close getting started">×</button></header>
+  setHtml(dialog, `<section class="onboarding-card">
+    <header class="onboarding-head"><span class="onboarding-brand"><img src="icons/icon-32.png" alt="">Getting started</span><button class="onboarding-close" type="button" aria-label="Close getting started">${icon("close")}</button></header>
     <div class="onboarding-art"></div><div class="onboarding-copy"><div class="eyebrow"></div><h2 id="onboardingTitle"></h2><p></p></div>
     <footer class="onboarding-foot"><div class="onboarding-dots" aria-label="Getting started progress"></div><div class="onboarding-actions"><button class="secondary onboarding-back" type="button">Back</button><button class="primary onboarding-next" type="button">Next</button></div></footer>
-  </section>`;
+  </section>`);
   document.body.append(dialog);
   let index = 0;
   const render = () => {

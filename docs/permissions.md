@@ -63,6 +63,24 @@ no-op when access is complete); if access is still missing, including from the
 inline button, the capture is parked and the site-access page opens with a
 "continue" mode that resumes the crosspost as soon as access is granted.
 
+## Feedback (network request and Firefox data collection)
+
+The feedback form (`feedback.html`) is the only part of the extension that
+contacts Crossposter's own server: pressing **Send feedback** posts the report
+to `https://crossposter.mochi.is/api/feedback`. No host permission is needed
+for that request; the endpoint answers extension origins with CORS. Nothing is
+sent without that click.
+
+The Firefox manifest declares `data_collection_permissions` with `required:
+["none"]` and `optional: ["technicalAndInteraction", "websiteContent"]`. The
+Send click requests exactly the types the submission includes: technical data
+for the diagnostic details, and website content when they include the masked
+page outline of a failed composer. The form asks for no email or other
+contact details. Declining sends nothing; the form explains how to send just
+the message.
+Chrome has no equivalent permission; the form's review step is the consent
+there.
+
 ## Review conclusions
 
 - Nothing requested is unused; removing any entry breaks a shipped feature.

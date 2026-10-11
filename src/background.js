@@ -2,7 +2,7 @@ import { ext } from "./shared/browser.js";
 import { isHandoffStage } from "./shared/handoff.js";
 import { createDraft } from "./shared/draft.js";
 import { resolveReshareMedia } from "./shared/downloaders.js";
-import { nativeDestination } from "./shared/destinations.js";
+import { NATIVE_DESTINATIONS, nativeDestination } from "./shared/destinations.js";
 import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, isSidePanelUnavailableError, isTabGroupingUnsupportedError, settleWithin, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { expandCapturedLinks } from "./shared/links.js";
@@ -17,6 +17,7 @@ import { CROSSPOST_SESSIONS_KEY, crosspostComposerUrl, recordPostedDestination, 
 import { markVideoResolving, settleVideoResolution } from "./shared/video-resolution-state.js";
 import { resolvePageVideoHint } from "./shared/source-video.js";
 import { allPlatformIds, incompletePlatformPermissions, missingSitePlatforms, SITE_ACCESS_DISMISSED_KEY, SITE_ACCESS_PAGE } from "./shared/platform-permissions.js";
+import { buildFeedbackReport, isSignInUrl, SIGN_IN_PATH, signedOutMessage, storeFeedbackReport } from "./shared/feedback.js";
 
 const MENU_ID = "crosspost-studio";
 let trayWindowId = null;
@@ -562,6 +563,12 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
+  if (message?.type === "RETRY_NATIVE_HANDOFF") {
+    retryNativeHandoff(message.sessionId, message.network)
+      .then(result => sendResponse({ ok: true, ...result }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
   if (message?.type === "CANCEL_NATIVE_HANDOFF") {
     cancelNativeHandoff(message.sessionId, message.attemptId)
       .then(closedTabs => sendResponse({ ok: true, closedTabs }))
@@ -592,7 +599,91 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(error => markCrosspostError(message.sessionId, error, message.attemptId).then(message => sendResponse({ ok: false, error: message })));
     return true;
   }
+  if (message?.type === "OPEN_FEEDBACK") {
+    openFeedbackForm(message, sender)
+      .then(result => sendResponse({ ok: true, ...result }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
 });
+
+// Opens Crossposter's feedback form (feedback.html) with a report of what
+// went wrong. The report stays in the browser (storage.session); the form
+// shows all of it and sends only when the user presses Send there.
+async function openFeedbackForm(message, sender) {
+  await backgroundStateReady.catch(() => {});
+  const kind = message.kind === "error" ? "error" : "manual";
+  const session = typeof message.sessionId === "string" ? crosspostSessions.get(message.sessionId) || null : null;
+  const network = nativeDestination(message.network) ? message.network : "";
+  const entry = network ? session?.handoff?.results?.find(item => item.network === network) : null;
+  // A missing outline must say why, so a failure in one browser can be
+  // told apart from a report that never asked for one.
+  let diagnostics = null, diagnosticsError = "";
+  if (kind === "error" && Number.isInteger(entry?.tabId)) {
+    try {
+      diagnostics = await collectPageDiagnostics(entry.tabId, entry.result?.frameId, { snapshot: true, signInPattern: SIGN_IN_PATH.source });
+      if (!diagnostics?.snapshot) diagnosticsError = "The page returned no outline.";
+    } catch (error) { diagnosticsError = error instanceof Error ? error.message : String(error); }
+  }
+  const { enabledPlatforms } = await readPlatformPreferences().catch(() => ({}));
+  const report = buildFeedbackReport({
+    kind, surface: message.surface, error: typeof message.error === "string" ? message.error : "",
+    manifest: ext.runtime.getManifest(), userAgent: navigator.userAgent, language: navigator.language,
+    enabledPlatforms, session, network, diagnostics, diagnosticsError
+  });
+  const reportId = await storeFeedbackReport(nativeSessionStorage, report);
+  const windowId = sender.tab?.windowId ?? message.windowId;
+  const url = `${ext.runtime.getURL("feedback.html")}?report=${encodeURIComponent(reportId)}`;
+  const tab = await ext.tabs.create({ url, active: true, ...(Number.isInteger(windowId) ? { windowId } : {}) });
+  return { tabId: tab.id };
+}
+
+// Runs diagnostics.js in the composer's frame (LinkedIn's composer can live
+// in a child frame), falling back to the top document if that frame is gone.
+// Rejects with the reason when neither works.
+async function collectPageDiagnostics(tabId, frameId, options) {
+  if (!ext.scripting?.executeScript) throw new Error("This browser can’t run scripts in the page.");
+  if (!Number.isInteger(tabId)) throw new Error("The destination tab is unknown.");
+  const run = async target => {
+    await ext.scripting.executeScript({ target, files: ["diagnostics.js"] });
+    const [injection] = await ext.scripting.executeScript({
+      target,
+      func: collectOptions => {
+        if (!globalThis.CrossposterDiagnostics) return { unavailable: true };
+        try { return globalThis.CrossposterDiagnostics.collect(collectOptions); }
+        catch (error) { return { failed: String(error?.message || error) }; }
+      },
+      args: [options]
+    });
+    const result = injection?.result;
+    if (!result) throw new Error(injection?.error ? String(injection.error.message || injection.error) : "The page script returned nothing.");
+    if (result.unavailable) throw new Error("The diagnostics script did not load in the page.");
+    if (result.failed) throw new Error(`Outlining the page failed: ${result.failed}`);
+    return result;
+  };
+  let frameError = "";
+  if (Number.isInteger(frameId) && frameId > 0) {
+    try { return await run({ tabId, frameIds: [frameId] }); }
+    catch (error) { frameError = error instanceof Error ? error.message : String(error); }
+  }
+  try { return await run({ tabId }); }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(frameError ? `Composer frame: ${frameError} Page: ${message}` : message);
+  }
+}
+
+// A destination that showed no composer may simply be signed out: it landed
+// on a sign-in route, its page asks for a password, or it offers a link to
+// sign in. Those are not bugs to report, and the user needs a different
+// instruction. All three signals are language-neutral.
+async function destinationLooksSignedOut(tabId) {
+  const tab = await ext.tabs.get(tabId).catch(() => null);
+  if (!tab) return false;
+  if (isSignInUrl(tab.url || tab.pendingUrl || "")) return true;
+  const probe = await collectPageDiagnostics(tabId, undefined, { snapshot: false, signInPattern: SIGN_IN_PATH.source }).catch(() => null);
+  return probe?.passwordField === true || probe?.signInLink === true;
+}
 
 function linkedInNetworkVideoHint(tabId, hint = {}) {
   if (hint.source !== "linkedin" || !Number.isInteger(tabId)) return hint;
@@ -1019,9 +1110,10 @@ async function updateComposerStage(message, tabId) {
   await backgroundStateReady;
   const session = sessionForTab([...crosspostSessions.values()], tabId);
   // Only the tab this handoff opened for that network may report progress,
-  // and only for the attempt that is still running.
+  // and only for the attempt that is still running (or a retry of it).
+  const running = session?.handoff?.state === "filling" || (session?.handoff?.state === "ready" && session.handoff.retrying === message.network);
   if (!isHandoffStage(message.stage) || typeof message.network !== "string"
-    || session?.handoff?.state !== "filling" || session.handoff.attemptId !== message.handoffId
+    || !running || session.handoff.attemptId !== message.handoffId
     || session.handoff.destinationTabs?.[message.network] !== tabId) return;
   session.handoff.composerProgress = { network: message.network, stage: message.stage };
   session.updatedAt = Date.now();
@@ -1032,7 +1124,9 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
   if (!handoff || typeof handoff.text !== "string" || !Array.isArray(handoff.media)) throw new Error("The native handoff is incomplete.");
   const session = await requireCrosspostSession(sessionId, sourceTabId);
   if (!isCurrentHandoff(session.id, attemptId)) return { results: [], tabGroupId: session.groupId ?? null, groupError: "", cancelled: true };
-  const targets = [...new Set(networks || [])].map(nativeDestination).filter(Boolean);
+  // Fill in NATIVE_DESTINATIONS order whatever order the request lists.
+  const requested = new Set(networks || []);
+  const targets = NATIVE_DESTINATIONS.filter(destination => requested.has(destination.id));
   if (!targets.length) throw new Error("Choose at least one supported destination.");
   const entries = [];
   const results = [];
@@ -1083,6 +1177,42 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
   session.handoff = { ...session.handoff, state: "ready", currentNetwork: "", results, tabGroupId, groupError };
   session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
   return { results, tabGroupId, groupError };
+}
+
+// Fills one destination of a finished crosspost again: reloads its tab (or
+// opens a new one if it was closed) so the adapter starts from a clean
+// composer, then replaces that destination's result. The attempt, the other
+// destinations, and the tab group stay as they are, so cancelling still
+// closes everything this crosspost opened.
+async function retryNativeHandoff(sessionId, network) {
+  await backgroundStateReady.catch(() => {});
+  const session = crosspostSessions.get(sessionId);
+  if (!session) throw new Error("This crosspost session is no longer available.");
+  const target = nativeDestination(network);
+  const handoff = session.handoff;
+  if (!target || !handoff?.networks?.includes(network)) throw new Error("That destination is not part of this crosspost.");
+  if (handoff.state !== "ready" || handoff.retrying) throw new Error("Wait for the crosspost to finish before retrying.");
+  const attemptId = handoff.attemptId;
+  const previous = (handoff.results || []).find(item => item.network === network);
+  const knownTabId = [previous?.tabId, handoff.destinationTabs?.[network]].find(Number.isInteger);
+  let tab = Number.isInteger(knownTabId) ? await ext.tabs.update(knownTabId, { url: target.homeUrl }).catch(() => null) : null;
+  if (!tab) {
+    tab = await createNativeComposerTab(target, session, attemptId, session.windowId, session.sourceTabId);
+    session.groupId = await groupComposerTabs(session.tabIds, session.groupId).catch(() => session.groupId);
+  }
+  session.handoff = { ...session.handoff, retrying: network, composerProgress: { network, stage: "locate" },
+    destinationTabs: { ...(session.handoff.destinationTabs || {}), [network]: tab.id } };
+  session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
+  let entry;
+  try { entry = { network, ...await fillNativeComposer(target, tab, { text: handoff.text || "", media: handoff.media || [], handoffId: attemptId }) }; }
+  catch (caught) { entry = { network, tabId: tab.id, error: caught instanceof Error ? caught.message : String(caught), result: null }; }
+  if (!isCurrentHandoff(session.id, attemptId)) return { cancelled: true };
+  const others = (session.handoff.results || []).filter(item => item.network !== network);
+  const results = session.handoff.networks.map(id => id === network ? entry : others.find(item => item.network === id)).filter(Boolean);
+  const { retrying: _retrying, ...rest } = session.handoff;
+  session.handoff = { ...rest, results, composerProgress: null };
+  session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
+  return { result: entry };
 }
 
 async function groupComposerTabs(tabIds, existingGroupId) {
@@ -1166,6 +1296,9 @@ async function fillNativeComposer(target, initialTab, handoff) {
     catch (error) { result = { ok: true, composerOpened: true, textInserted: firstResult.textInserted, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
   }
   if (!result?.ok) result = { ...result, textInserted: false, mediaInserted: 0 };
+  if (result?.composerOpened === false && result.reason !== "signed-out" && await destinationLooksSignedOut(tab.id)) {
+    result = { ...result, reason: "signed-out", error: signedOutMessage(target.label) };
+  }
   return { tabId: tab.id, result, ...(result?.error ? { error: result.error } : {}) };
 }
 

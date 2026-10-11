@@ -16,6 +16,10 @@
   const PREVIEW_SELECTOR = ".share-creation-state__preview-container, #ShareBoxpreviewCard";
   const POST_BUTTON_SELECTOR = ".share-actions__primary-action";
   const COMPOSER_WAIT_MS = 30000;
+  // How long to wait for the post preview once LinkedIn has accepted the
+  // upload. Handoffs fill one tab at a time, so this wait holds up every
+  // destination after LinkedIn.
+  const MEDIA_VERIFY_MS = 30000;
   const composerStates = new WeakMap();
   let runningHandoff = null;
   const adapter = {
@@ -150,7 +154,7 @@
     return textButtons[textButtons.length - 1] || null;
   }
 
-  function mediaPreviewCount(composer, helpers, video) {
+  function mediaPreviewCount(composer, helpers, video, names = []) {
     if (!composer) return 0;
     const preview = helpers.queryAllDeep(PREVIEW_SELECTOR, composer)[0];
     if (!preview) return 0;
@@ -159,23 +163,33 @@
       // LinkedIn marks decorative image wrappers aria-hidden even though the
       // preview is visibly rendered. That is not a hidden upload.
       .filter(element => element.isConnected !== false && helpers.isVisible(element)).length;
-    if (video) return count ? 1 : 0;
+    if (video) return count || previewNamesFile(preview, helpers, names) ? 1 : 0;
     // The post preview displays four images and a +N overlay for larger sets.
     const overflow = helpers.findVisible(".update-components-image__excess-image-count-text", preview);
     const extra = String(overflow?.textContent || "").match(/^\s*\+\s*(\d+)\s*$/)?.[1];
     return count + (count && extra ? Number(extra) : 0);
   }
 
+  // LinkedIn shows a video it does not render a player for (seen in
+  // Firefox, 2026-10-11) as a file card: a play tile, the file's name, and
+  // its size. The name is ours and language-neutral, so it counts too.
+  function previewNamesFile(preview, helpers, names) {
+    if (!names.length) return false;
+    const roots = [preview, ...helpers.queryAllDeep("*", preview).map(node => node?.shadowRoot).filter(Boolean)];
+    const text = roots.map(root => root.textContent || "").join("\n");
+    return names.some(name => name && text.includes(name));
+  }
+
   async function runHandoff({ handoff, files, helpers }) {
     const started = Date.now(), stages = [];
-    let stage = "locate", composer = null, textInserted = false, mediaInserted = 0;
+    let stage = "locate", composer = null, textInserted = false, mediaInserted = 0, mediaUnverified = false;
     let releaseFilePickerGuard = () => {};
     const report = name => {
       stage = name;
       stages.push({ stage, elapsedMs: Date.now() - started });
       helpers.reportComposerStage?.(handoff.handoffId, "linkedin", stage);
     };
-    const result = error => ({ ok: true, composerOpened: Boolean(composer), textInserted, mediaInserted,
+    const result = error => ({ ok: true, composerOpened: Boolean(composer), textInserted, mediaInserted, mediaUnverified,
       stage, stages, retryable: false, error });
     const wait = (check, timeout = COMPOSER_WAIT_MS, stableMs = 0) => {
       let previous = null, since = 0;
@@ -220,11 +234,12 @@
         throw new Error("The LinkedIn composer already contains different text. Your existing text was preserved.");
       }
       const video = files.some(file => file.type.startsWith("video/"));
+      const names = files.map(file => file.name).filter(Boolean);
       if (files.some(file => !file.type.startsWith(video ? "video/" : "image/")) || (video && files.length > 1)) {
         throw new Error("LinkedIn needs images or a single video. Attach this selection manually.");
       }
       if (files.length) {
-        if (state.mediaComplete && mediaPreviewCount(current(), helpers, video) >= files.length) mediaInserted = files.length;
+        if (state.mediaComplete && mediaPreviewCount(current(), helpers, video, names) >= files.length) mediaInserted = files.length;
         else {
           report("attach");
           if (!state.mediaStarted) {
@@ -269,7 +284,7 @@
             const dialog = current();
             if (!dialog) return null;
             const mediaRoot = helpers.findVisible(MEDIA_EDITOR_SELECTOR, dialog);
-            if (!mediaRoot) return findEditor(dialog, helpers) && mediaPreviewCount(dialog, helpers, video) >= files.length ? "attached" : null;
+            if (!mediaRoot) return findEditor(dialog, helpers) && mediaPreviewCount(dialog, helpers, video, names) >= files.length ? "attached" : null;
             // The file manager is collapsed for a single video. Its file
             // entries still establish the count; Next must be visibly usable.
             const previews = helpers.queryAllDeep(".media-editor-file-manager__file-preview", mediaRoot);
@@ -278,12 +293,20 @@
           }, 120000, 350);
           if (next !== "attached") next.click();
           report("verify-media");
-          await wait(() => {
+          // LinkedIn has taken the upload. A preview it renders in a way this
+          // check doesn't recognize must not cost the post its text: after a
+          // bounded wait, fill the text and ask the user to check the media.
+          const verified = await wait(() => {
             const dialog = current();
-            return dialog && findEditor(dialog, helpers) && mediaPreviewCount(dialog, helpers, video) >= files.length ? dialog : null;
-          }, 120000, 600);
-          state.mediaComplete = true;
-          mediaInserted = files.length;
+            return dialog && findEditor(dialog, helpers) && mediaPreviewCount(dialog, helpers, video, names) >= files.length ? dialog : null;
+          }, MEDIA_VERIFY_MS, 600).catch(error => {
+            if (error?.message !== "The native composer did not appear.") throw error;
+            return null;
+          });
+          if (verified) {
+            state.mediaComplete = true;
+            mediaInserted = files.length;
+          } else mediaUnverified = true;
         }
       }
       report("fill-text");
@@ -313,7 +336,7 @@
       await wait(() => {
         const dialog = current();
         if (!dialog || (expected && editorText(findEditor(dialog, helpers)) !== expected)) return null;
-        if (files.length && mediaPreviewCount(dialog, helpers, video) < files.length) return null;
+        if (files.length && !mediaUnverified && mediaPreviewCount(dialog, helpers, video, names) < files.length) return null;
         return (!expected && !files.length) || findPostButton(dialog, helpers) ? dialog : null;
       }, 120000, 750);
       report("ready");

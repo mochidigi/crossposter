@@ -45,6 +45,7 @@ async function render() {
   later.textContent = done ? "Close" : resuming ? "Cancel crosspost" : "Not now";
   if (done && !resuming) {
     document.querySelector("h1").textContent = "You’re all set";
+    document.querySelector(".lead").textContent = "Crossposter can now read the posts you choose and fill each network’s composer on every supported site.";
     hint.textContent = "Right-click any post on a supported site and choose Crosspost.";
   }
   if (resuming) await resumeCapture();

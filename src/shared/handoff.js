@@ -30,39 +30,41 @@ export function selectComposerFrame(frames = []) {
 }
 
 // Progress reported by the content-script adapters while they drive a
-// native composer (helpers.reportComposerStage). The sidebar shows these as
-// the handoff status, so every network reports the same vocabulary.
+// native composer (helpers.reportComposerStage), so every network reports
+// the same vocabulary. The status rows show these beside the network's name,
+// so they don't repeat it.
 export const HANDOFF_STAGES = Object.freeze({
-  locate: label => `Looking for ${label}’s post composer…`,
-  open: label => `Opening ${label}’s post composer…`,
-  inspect: label => `Checking ${label}’s existing draft…`,
-  attach: label => `Attaching media to ${label}…`,
-  "process-media": label => `Waiting for ${label} to prepare the media…`,
-  "verify-media": label => `Checking ${label}’s media previews…`,
-  "fill-text": label => `Inserting the ${label} post text…`,
-  "verify-text": label => `Checking the ${label} post text…`,
-  verify: label => `Waiting for ${label}’s post to be ready…`,
-  ready: label => `${label}’s composer is ready for review.`
+  locate: "Finding the composer…",
+  open: "Opening the composer…",
+  inspect: "Checking for a draft…",
+  attach: "Attaching media…",
+  "process-media": "Waiting for the media to process…",
+  "verify-media": "Checking the media preview…",
+  "fill-text": "Adding the text…",
+  "verify-text": "Checking the text…",
+  verify: "Waiting for the post to be ready…",
+  ready: "Ready to review"
 });
 
 export function isHandoffStage(stage) {
   return typeof stage === "string" && Object.hasOwn(HANDOFF_STAGES, stage);
 }
 
-export function handoffStageText(stage, label = "the destination") {
-  return isHandoffStage(stage) ? HANDOFF_STAGES[stage](label) : "";
+export function handoffStageText(stage) {
+  return isHandoffStage(stage) ? HANDOFF_STAGES[stage] : "";
 }
 
 // A handoff that ended at the locate stage without a composer is either a
-// page that never showed one (logged out, blocked) or a composer the adapter
-// no longer recognizes because the site changed its markup. The user can
-// tell those apart by looking at the page, so say so.
+// page that never showed one (slow, blocked) or a composer the adapter no
+// longer recognizes because the site changed its markup. Signed-out pages
+// are told apart separately (reason "signed-out"), so the hint offers both
+// a retry and a report rather than asking the user to diagnose which.
 export function composerNotFound(result) {
   return Boolean(result) && result.composerOpened === false && result.stage === "locate" && result.reason !== "signed-out";
 }
 
-export function composerNotFoundHint(label = "The site") {
-  return `If ${label}’s composer is already open on the page, ${label} has probably changed its layout and Crossposter needs an update — please report this.`;
+export function composerNotFoundHint() {
+  return "Composer not found. Please try again or report this.";
 }
 
 export const COMPOSER_DELIVERY_TIMEOUT_MS = 20000;

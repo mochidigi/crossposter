@@ -11,7 +11,7 @@ allowSiteAccess.onclick = async () => {
   // prompt, so the popup may close before the result comes back.
   const result = await requestCompletePlatformPermissions(ext.permissions, missingSiteAccess);
   allowSiteAccess.disabled = false;
-  if (result.ok) { siteAccess.hidden = true; return; }
+  if (result.ok) { siteAccess.hidden = true; document.querySelector("#openComposer").className = "primary"; return; }
   const response = await ext.runtime.sendMessage({ type: "OPEN_SITE_ACCESS_PAGE" }).catch(() => null);
   if (response?.ok) window.close();
 };
@@ -20,6 +20,8 @@ missingSitePlatforms(ext.permissions, ext.runtime.getManifest()).then(missing =>
   if (!missing.length) return;
   document.querySelector("#siteAccessText").textContent = `Allow access to ${missing.map(platformLabel).join(", ")} so Crossposter can capture posts and fill each composer.`;
   siteAccess.hidden = false;
+  // One primary action at a time: granting access comes first.
+  document.querySelector("#openComposer").className = "secondary";
 }).catch(() => {});
 
 document.querySelector("#showInfo").onclick = async () => {
@@ -34,6 +36,11 @@ document.querySelector("#openSettings").onclick = async () => {
 
 document.querySelector("#openComposer").onclick = async () => {
   const response = await ext.runtime.sendMessage({ type: "OPEN_CROSSPOST_COMPOSER", fresh: true }).catch(() => null);
+  if (response?.ok) window.close();
+};
+
+document.querySelector("#sendFeedback").onclick = async () => {
+  const response = await ext.runtime.sendMessage({ type: "OPEN_FEEDBACK", kind: "manual", surface: "popup" }).catch(() => null);
   if (response?.ok) window.close();
 };
 

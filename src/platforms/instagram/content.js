@@ -114,6 +114,12 @@
       });
       return (link?.innerText || link?.textContent || "").trim();
     },
+    isOwnPost: ({ post }) => {
+      const authoredBy = String(metadataByPost.get(post)?.user?.username || "").toLowerCase()
+        || [...post.querySelectorAll("a[href]")].map(link => instagramProfileHandle(link.getAttribute("href"))).find(Boolean) || "";
+      const signedInAs = instagramViewerHandle();
+      return Boolean(authoredBy && signedInAs && authoredBy === signedInAs);
+    },
     videoInfo: ({ post, video }) => {
       const item = instagramMetadataMedia(metadataByPost.get(post)).find(media => media.kind === "video");
       const currentSrc = item?.url || video?.currentSrc || video?.src || "";
@@ -136,7 +142,7 @@
     },
     async openComposer({ handoff, files, helpers }) {
       if (!(location.hostname === "instagram.com" || location.hostname.endsWith(".instagram.com"))) throw new Error("Open Instagram in this tab, then use the Crossposter sidebar.");
-      if (!files.length) return helpers.manualResult("Instagram requires a photo or video. Add media to this crosspost first.");
+      if (!files.length) return { ...helpers.manualResult("Instagram requires a photo or video. Add media to this crosspost first."), reason: "needs-media" };
       const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "instagram", stage);
       const fileInput = () => helpers.findVisible("[role='dialog']") && helpers.queryAllDeep("[role='dialog'] input[type='file']").find(input => !input.disabled) || null;
       report("locate");
@@ -192,6 +198,31 @@
       return { ok: true, composerOpened: true, textInserted, mediaInserted, error: textInserted ? "" : "Use the Crossposter sidebar to finish the handoff." };
     }
   });
+
+  // Single-segment routes that are not profiles.
+  const RESERVED_PATHS = new Set(["explore", "reels", "direct", "accounts", "stories", "p", "reel", "tv", "about", "legal", "developer", "web", "challenge", "emails", "session", "your_activity"]);
+  function instagramProfileHandle(href) {
+    const match = String(href || "").match(/^\/([A-Za-z0-9._]+)\/(?:[?#].*)?$/);
+    return match && !RESERVED_PATHS.has(match[1].toLowerCase()) ? match[1].toLowerCase() : "";
+  }
+
+  // The navigation column holds Search (/explore/), Messages (/direct/…), and
+  // the viewer's own profile (/<username>/, with their avatar). Its labels are
+  // localized; the hrefs are not. Walk up from Search to the block that also
+  // holds Messages, without reaching the feed, and read the one profile link.
+  function instagramViewerHandle() {
+    const search = [...document.querySelectorAll("a[href='/explore/']")].find(link => !link.closest?.("article"));
+    for (let node = search?.parentElement; node && node !== document.body; node = node.parentElement) {
+      if (node.querySelector("article, main")) return "";
+      if (!node.querySelector("a[href^='/direct/']")) continue;
+      const profiles = [...node.querySelectorAll("a[href]")].filter(link => instagramProfileHandle(link.getAttribute("href")));
+      if (!profiles.length) continue;
+      const withAvatar = profiles.filter(link => link.querySelector("img"));
+      const candidates = withAvatar.length ? withAvatar : profiles;
+      return candidates.length === 1 ? instagramProfileHandle(candidates[0].getAttribute("href")) : "";
+    }
+    return "";
+  }
 
   function instagramSourceUrl(post) {
     const href = post?.querySelector?.("a[href^='/p/'], a[href^='/reels/']")?.getAttribute?.("href") || "";
