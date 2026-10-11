@@ -86,20 +86,29 @@
       const result = (error, extra = {}) => ({ ok: true, composerOpened, textInserted, mediaInserted, stage, stages, error, ...extra });
       const selector = "textarea[placeholder*='What'], [data-testid='composePostTextArea'], [role='dialog'] textarea, [role='dialog'] [contenteditable='true']";
       report("locate");
-      let field = helpers.findVisible(selector);
+      // The tab reports "complete" before Bluesky's app has restored the
+      // session and rendered its navigation (150–500 ms later in a measured
+      // load), and a retry reloads the tab first, so a single look right
+      // away loses that race. Wait until the composer, its launch control,
+      // or a signed-out page appears.
+      const findStart = () => {
+        const field = helpers.findVisible(selector);
+        if (field) return { field };
+        const launch = blueskyComposeLauncher(helpers);
+        if (launch) return { launch };
+        return blueskySignedOut() ? { signedOut: true } : null;
+      };
+      const start = await helpers.waitForElement(findStart, LAUNCHER_WAIT_MS).catch(() => null);
+      // A signed-out bsky.app still renders the public feed but no compose
+      // control, so "open the composer" would send the user looking for a
+      // button that does not exist. Say why instead; the reason keeps the
+      // sidebar from adding its "layout changed" hint.
+      if (start?.signedOut) return result(MESSAGES["signed-out"], { reason: "signed-out" });
+      if (!start) return result(MESSAGES.locate);
+      let field = start.field;
       if (!field) {
-        const launch = helpers.findVisible("[data-testid='composeFAB'], button[aria-label*='compose' i][aria-label*='post' i], a[href*='/intent/compose']")
-          || helpers.findClickable("New post", document, element => !element.closest("[role='dialog']"), false);
-        if (!launch) {
-          // A signed-out bsky.app still renders the public feed but no
-          // compose control, so "open the composer" would send the user
-          // looking for a button that does not exist. Say why instead; the
-          // reason keeps the sidebar from adding its "layout changed" hint.
-          if (blueskySignedOut()) return result(MESSAGES["signed-out"], { reason: "signed-out" });
-          return result(MESSAGES.locate);
-        }
         report("open");
-        launch.click();
+        start.launch.click();
         try { field = await helpers.waitForElement(() => helpers.findVisible(selector)); }
         catch { return result(MESSAGES.open); }
       }
@@ -150,16 +159,41 @@
     attach: "Bluesky’s composer opened but did not expose its media upload control. Drag the media from the sidebar."
   });
 
+  const LAUNCHER_WAIT_MS = 10000;
+
+  // Bluesky's compose control is a floating button (composeFAB) below 800px
+  // wide and a left-navigation button at 800px and wider, which has no test
+  // id and whose label and text follow the UI language. Both draw the
+  // EditBig_Stroke2_Corner2_Rounded icon (a box with a pen through its top
+  // right corner), so match its path geometry; the English label is only
+  // the last fallback. The prefix runs to the gap the pen leaves in the
+  // box's top edge, which keeps plain rounded boxes from matching.
+  const COMPOSE_ICON = Object.freeze({
+    paths: ["M3 16.8V7.2c0-.544-.001-1.011.03-1.395.033-.395.104-.789.297-1.167a3 3 0 0 1 1.31-1.31c.379-.193.772-.265 1.168-.297C6.188 2.999 6.657 3 7.2 3H11"]
+  });
+
+  function blueskyComposeLauncher(helpers) {
+    const outsideDialog = element => !element.closest("[role='dialog'], dialog");
+    return helpers.findVisible("[data-testid='composeFAB'], a[href*='/intent/compose']")
+      || helpers.queryAllDeep("button, [role='button']")
+        .find(element => outsideDialog(element) && helpers.isVisible(element) && helpers.iconMatches(element, COMPOSE_ICON))
+      || helpers.findVisible("button[aria-label*='compose' i][aria-label*='post' i]")
+      || helpers.findClickable("New post", document, outsideDialog, false);
+  }
+
   // Signed-in Bluesky always renders its navigation with fixed, language-
   // neutral hrefs plus the compose control; the signed-out landing page shows
   // only the public feed with localized Sign in / Create account buttons that
-  // carry no stable attribute. Require some rendered app content so a page
-  // that has not painted yet is not mistaken for a signed-out one.
+  // carry no stable attribute. Require rendered feed posts so a page that is
+  // still drawing is not mistaken for a signed-out one: below 800px wide a
+  // signed-in home screen has no navigation links and shows its test ids
+  // about 200 ms before composeFAB, which arrives with the feed list, ahead
+  // of the posts that list loads (checked 2026-10-11).
   function blueskySignedOut() {
     const signedIn = document.querySelector(
       "[data-testid='composeFAB'], a[href='/notifications'], a[href='/messages'], a[href^='/settings'], nav a[href*='/profile/']"
     );
-    return !signedIn && Boolean(document.querySelector("[data-testid]"));
+    return !signedIn && Boolean(document.querySelector("[data-testid^='feedItem-by-']"));
   }
 
   function blueskyPostUrl(post) {

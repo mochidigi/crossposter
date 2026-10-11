@@ -16,6 +16,7 @@ import { isFreshComposerUrl } from "./shared/compose-mode.js";
 import { CROSSPOST_SESSIONS_KEY, crosspostSessionIdFromUrl } from "./shared/crosspost-sessions.js";
 import { settleVideoResolution } from "./shared/video-resolution-state.js";
 import { incompletePlatformPermissions, platformLabel, requestCompletePlatformPermissions } from "./shared/platform-permissions.js";
+import { feedbackOverlay } from "./shared/feedback-overlay.js";
 
 const showInfo = document.querySelector("#showInfo");
 // Onboarding markup is only needed when the info button is used; import it on
@@ -29,6 +30,7 @@ const composeUrl = new URL(location.href);
 const sessionId = crosspostSessionIdFromUrl(location.href);
 // Declared before the awaits below: Feedback can be clicked while Compose loads.
 let toastTimer = 0;
+const openFeedbackOverlay = feedbackOverlay(document.querySelector("#feedbackDialog"));
 document.querySelector("#feedbackOpen").onclick = () => openFeedback("manual");
 // A fresh compose has no captured text to wait for — show the real placeholder
 // immediately instead of the "Loading…" hint (knowable synchronously from the URL).
@@ -320,12 +322,10 @@ function reportButton(error, className, beforeOpen = () => {}) {
   return button;
 }
 
-// Opens Crossposter's feedback form in a tab; nothing is sent from here.
+// Opens Crossposter's feedback form over Compose; nothing is sent from here.
 function openFeedback(kind, error = "", network = "") {
-  const failed = () => showToast("The feedback form could not be opened.");
-  ext.runtime.sendMessage({ type: "OPEN_FEEDBACK", kind, error, network, surface: "compose", sessionId })
-    .then(response => { if (!response?.ok) failed(); })
-    .catch(failed);
+  openFeedbackOverlay({ kind, error, network, surface: "compose", sessionId })
+    .catch(() => showToast("The feedback form could not be opened."));
 }
 function renderMeta() {
   document.querySelector("#count").textContent = `${draft.text.length} / 3000`;

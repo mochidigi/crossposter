@@ -1,6 +1,6 @@
 import { ext } from "./shared/browser.js";
 import { nativeDestination } from "./shared/destinations.js";
-import { feedbackConsentTypes, feedbackSubmission, readFeedbackReport, removeFeedbackReport, requestFeedbackConsent, sendFeedback } from "./shared/feedback.js";
+import { FEEDBACK_FRAME_MESSAGE, feedbackConsentTypes, feedbackSubmission, readFeedbackReport, removeFeedbackReport, requestFeedbackConsent, sendFeedback } from "./shared/feedback.js";
 
 const LABELS = {
   problem: ["What happened?", "What were you doing, what did you expect, and what happened instead?"],
@@ -9,12 +9,36 @@ const LABELS = {
 };
 const storage = ext.storage.session || ext.storage.local;
 const manifest = ext.runtime.getManifest();
-const reportId = new URL(location.href).searchParams.get("report") || "";
+const params = new URL(location.href).searchParams;
+const reportId = params.get("report") || "";
 const form = document.querySelector("#feedbackForm"), message = document.querySelector("#message");
 const includeReport = document.querySelector("#includeReport"), status = document.querySelector("#status"), send = document.querySelector("#send");
 
+// Framed by the Compose or sidebar overlay (shared/feedback-overlay.js),
+// which sizes the frame to the form and closes it, asking first when a
+// typed message was not sent.
+const embedded = params.has("embedded") && window.parent !== window;
+const toOverlay = data => { if (embedded) window.parent.postMessage({ type: FEEDBACK_FRAME_MESSAGE, ...data }, location.origin); };
+if (embedded) {
+  document.documentElement.classList.add("embedded");
+  const card = document.querySelector(".feedback-card");
+  new ResizeObserver(() => toOverlay({ height: card.getBoundingClientRect().height })).observe(card);
+  message.addEventListener("input", () => toOverlay({ unsent: Boolean(message.value.trim()) }));
+  const closeOverlay = document.querySelector("#closeOverlay");
+  closeOverlay.hidden = false;
+  closeOverlay.onclick = () => toOverlay({ close: true });
+  // Escape inside the frame doesn't reach the overlay's dialog.
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    event.preventDefault();
+    toOverlay({ close: true });
+  });
+  document.querySelector("#closeTab").textContent = "Close";
+}
+
 const report = reportId ? await readFeedbackReport(storage, reportId).catch(() => null) : null;
 if (report) showReport(report);
+toOverlay({ ready: true, height: document.querySelector(".feedback-card").getBoundingClientRect().height });
 
 function showReport(details) {
   const failed = details.handoff || details.crosspost?.results?.find(result => result.ok === false);
@@ -82,6 +106,7 @@ send.addEventListener("click", event => {
     const result = await sendFeedback(submission);
     if (reportId) await removeFeedbackReport(storage, reportId).catch(() => {});
     document.querySelector("#reference").textContent = String(result.id || "").slice(0, 8) || "—";
+    toOverlay({ unsent: false });
     form.hidden = true;
     const thanks = document.querySelector("#thanks");
     thanks.hidden = false;
@@ -93,6 +118,7 @@ send.addEventListener("click", event => {
 });
 
 document.querySelector("#closeTab").onclick = async () => {
+  if (embedded) return toOverlay({ close: true });
   const tab = await ext.tabs.getCurrent().catch(() => null);
   if (Number.isInteger(tab?.id)) ext.tabs.remove(tab.id).catch(() => window.close());
   else window.close();

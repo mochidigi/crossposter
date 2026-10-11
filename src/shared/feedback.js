@@ -7,6 +7,9 @@ export const FEEDBACK_ENDPOINT = "https://crossposter.mochi.is/api/feedback";
 export const FEEDBACK_REPORTS_KEY = "crossposterFeedbackReports";
 export const MAX_STORED_REPORTS = 5;
 export const MAX_SNAPSHOT_CHARS = 250_000;
+// postMessage type between feedback.html and the overlay framing it
+// (shared/feedback-overlay.js).
+export const FEEDBACK_FRAME_MESSAGE = "crossposter-feedback";
 
 // Failures the user resolves on the site (signing in, adding media) are not
 // bugs, so they get no "Report this problem" prompt.

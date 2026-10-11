@@ -559,3 +559,25 @@ input, select { color: var(--ink); background: var(--surface); }
   .feedback-card { margin: 0; padding: 24px 18px; border: 0; }
   .feedback-diagnostics .feedback-hint, .feedback-diagnostics > details { margin-left: 0; }
 }
+/* The same form framed by the Compose or sidebar overlay (feedback.html?embedded=1);
+   the overlay's dialog draws the border and sizes the frame to the card. */
+.embedded, .embedded body { min-height: 0; background: var(--surface); }
+.embedded .feedback-card { position: relative; max-width: none; margin: 0; padding: 26px 28px 22px; border: 0; }
+.embedded .feedback-brand { display: none; }
+.embedded .feedback-card > h1 { margin: 0 46px 8px 0; font-size: 28px; letter-spacing: -.04em; line-height: 1.1; }
+.embedded .feedback-lead { margin-bottom: 22px; font-size: 14px; }
+.embedded .feedback-privacy { margin-top: 22px; }
+.feedback-close { position: absolute; top: 20px; right: 20px; display: grid; width: 36px; height: 36px; padding: 0; place-items: center; border: 1px solid var(--line); border-radius: 1px; color: var(--ink); background: var(--surface); cursor: pointer; }
+.feedback-close:hover { color: var(--ink-inverse); background: var(--ink); }
+@media (max-width: 480px) {
+  .embedded .feedback-card { padding: 18px 16px 16px; }
+  .embedded .feedback-card > h1 { font-size: 22px; }
+  .embedded .feedback-lead { margin-bottom: 18px; }
+  .embedded .feedback-card textarea { min-height: 120px; }
+  .feedback-close { top: 12px; right: 12px; width: 32px; height: 32px; }
+}
+
+/* Compose's overlay for the form (shared/feedback-overlay.js). */
+.feedback-dialog { width: min(640px, calc(100vw - 30px)); max-height: calc(100vh - 30px); padding: 0; overflow: hidden; border: 1px solid var(--line); color: var(--ink); background: var(--surface); }
+.feedback-dialog::backdrop { background: rgba(0, 0, 0, .7); }
+.feedback-dialog iframe { display: block; width: 100%; height: 520px; max-height: calc(100vh - 32px); border: 0; }

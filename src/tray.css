@@ -72,3 +72,9 @@ h2 { margin: 18px 0 7px; font-size: 11px; letter-spacing: .14em; text-transform:
 .media-hint { color: var(--text-muted); font-size: 12px; }
 .button { width: 100%; min-height: 36px; margin-top: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 1px; color: var(--ink); background: var(--surface); cursor: pointer; font: inherit; font-weight: 700; }
 .button:hover { color: var(--ink-inverse); background: var(--ink); }
+
+/* The feedback form (feedback.html?embedded=1, styled by its own styles.css)
+   over the sidebar; shared/feedback-overlay.js sizes the frame to it. */
+.feedback-dialog { width: calc(100vw - 16px); max-width: 560px; max-height: calc(100vh - 16px); padding: 0; overflow: hidden; border: 1px solid var(--line); color: var(--ink); background: var(--surface); }
+.feedback-dialog::backdrop { background: rgba(0, 0, 0, .7); }
+.feedback-dialog iframe { display: block; width: 100%; height: 480px; max-height: calc(100vh - 18px); border: 0; }

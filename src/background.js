@@ -609,7 +609,10 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Opens Crossposter's feedback form (feedback.html) with a report of what
 // went wrong. The report stays in the browser (storage.session); the form
-// shows all of it and sends only when the user presses Send there.
+// shows all of it and sends only when the user presses Send there. Compose
+// and the sidebar show the form in their own overlay (`overlay`, see
+// shared/feedback-overlay.js) and only need the report's id; the popup,
+// which closes, gets a tab.
 async function openFeedbackForm(message, sender) {
   await backgroundStateReady.catch(() => {});
   const kind = message.kind === "error" ? "error" : "manual";
@@ -632,6 +635,7 @@ async function openFeedbackForm(message, sender) {
     enabledPlatforms, session, network, diagnostics, diagnosticsError
   });
   const reportId = await storeFeedbackReport(nativeSessionStorage, report);
+  if (message.overlay === true) return { reportId };
   const windowId = sender.tab?.windowId ?? message.windowId;
   const url = `${ext.runtime.getURL("feedback.html")}?report=${encodeURIComponent(reportId)}`;
   const tab = await ext.tabs.create({ url, active: true, ...(Number.isInteger(windowId) ? { windowId } : {}) });

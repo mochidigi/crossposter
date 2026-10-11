@@ -2,6 +2,7 @@ import { ext } from "./shared/browser.js";
 import { populateFileDrag } from "./shared/drag.js";
 import { getHandoffMedia } from "./shared/media-store.js";
 import { hasReportableHandoffError } from "./shared/feedback.js";
+import { feedbackOverlay } from "./shared/feedback-overlay.js";
 import { handoffNetworkStatuses, handoffStatusRow, handoffSummary } from "./shared/handoff-status.js";
 
 const status = document.querySelector("#status"), empty = document.querySelector("#empty"), content = document.querySelector("#content");
@@ -12,6 +13,7 @@ const mediaHint = document.querySelector("#mediaHint");
 const sessionsBox = document.querySelector("#sessions");
 const reportActions = document.querySelector("#reportActions");
 const closeWarning = document.querySelector("#closeWarning"), emptyNone = document.querySelector("#emptyNone"), emptyIdle = document.querySelector("#emptyIdle");
+const openFeedbackOverlay = feedbackOverlay(document.querySelector("#feedbackDialog"));
 const panelWindowId = (await ext.windows.getCurrent().catch(() => null))?.id;
 let currentText = "", files = [], objectUrls = [];
 let renderGeneration = 0, mediaCacheKey = "";
@@ -27,12 +29,10 @@ renderSessions(initial).catch(showRenderError);
 
 document.querySelector("#sendFeedback").onclick = () => openFeedback("manual");
 
-// Opens Crossposter's feedback form in a tab; nothing is sent from here.
+// Opens Crossposter's feedback form over the sidebar; nothing is sent from here.
 function openFeedback(kind, network = "") {
-  const fallback = "The feedback form could not be opened.";
-  ext.runtime.sendMessage({ type: "OPEN_FEEDBACK", kind, network, surface: "tray", sessionId: selectedSessionId, windowId: panelWindowId })
-    .then(response => { if (!response?.ok) showStatus(response?.error || fallback); })
-    .catch(() => { showStatus(fallback); });
+  openFeedbackOverlay({ kind, network, surface: "tray", sessionId: selectedSessionId })
+    .catch(error => showStatus(error instanceof Error ? error.message : "The feedback form could not be opened."));
 }
 
 copyButton.onclick = async () => {
