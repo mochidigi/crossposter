@@ -1,4 +1,7 @@
 export const CONTENT_SCRIPT_CORE = "content.js";
+// Covers a destination tab while a handoff fills it (handoff-overlay.js). It
+// starts with the document so it can hide the page's own loading too.
+export const HANDOFF_OVERLAY_SCRIPT = Object.freeze({ id: "crossposter-handoff-overlay", file: "handoff-overlay.js" });
 
 function permissionGroup(documents, services = []) {
   return Object.freeze({ documents: Object.freeze(documents), services: Object.freeze(services) });
@@ -67,7 +70,8 @@ export function contentScriptFilesForUrl(url, enabledPlatforms) {
 
 export function registeredPlatformContentScripts(enabledPlatforms) {
   const enabled = new Set(enabledPlatforms || PLATFORM_CONTENT_SCRIPTS.map(item => item.platformId));
-  return PLATFORM_CONTENT_SCRIPTS.filter(item => !item.activeTabOnly && (item.sourceOnly || enabled.has(item.platformId))).map(item => ({
+  const platforms = PLATFORM_CONTENT_SCRIPTS.filter(item => !item.activeTabOnly && (item.sourceOnly || enabled.has(item.platformId)));
+  const scripts = platforms.map(item => ({
     id: item.id,
     matches: [...item.matches],
     js: [CONTENT_SCRIPT_CORE, item.file],
@@ -75,4 +79,9 @@ export function registeredPlatformContentScripts(enabledPlatforms) {
     persistAcrossSessions: true,
     ...(item.allFrames ? { allFrames: true } : {})
   }));
+  const destinations = [...new Set(platforms.filter(item => !item.sourceOnly).flatMap(item => item.matches))];
+  if (destinations.length) {
+    scripts.push({ id: HANDOFF_OVERLAY_SCRIPT.id, matches: destinations, js: [HANDOFF_OVERLAY_SCRIPT.file], runAt: "document_start", persistAcrossSessions: true });
+  }
+  return scripts;
 }

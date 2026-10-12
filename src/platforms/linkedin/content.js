@@ -25,7 +25,10 @@
   const adapter = {
     id: "linkedin",
     matches: host => host.endsWith("linkedin.com"),
-    postSelectors: [".feed-shared-update-v2", "article", "[role='article']", "[role='listitem']:has(h2)"],
+    // The redesigned feed (2026-10-12) renders each post as a list item keyed
+    // update-card-…, in the home feed, on recent-activity pages, and in the
+    // profile's Activity carousel (where the card has no h2).
+    postSelectors: [".feed-shared-update-v2", "[role='listitem'][componentkey^='update-card']", "article", "[role='article']", "[role='listitem']:has(h2)"],
     sourceAuthor: linkedInSourceAuthor,
     sourceUrl: linkedInSourceUrl,
     isOwnPost: linkedInIsOwnPost,
@@ -459,9 +462,31 @@
     if (visibleName) return visibleName;
     const legacy = helpers.firstText(post, actorSelectors.split(", "));
     if (legacy) return legacy;
-    const actorLink = helpers.queryAllDeep("a[href*='/in/'], a[href*='/company/']", post)
-      .find(link => (link.innerText || link.textContent || "").trim());
-    return (actorLink?.innerText || actorLink?.textContent || "").split("\n").map(value => value.trim()).find(Boolean) || "";
+    const named = link => (link.innerText || link.textContent || "").trim();
+    const actorLink = linkedInActorLinks(post, helpers).find(named)
+      || helpers.queryAllDeep("a[href*='/in/'], a[href*='/company/']", post).find(named);
+    // The name link can also carry a localized "• You" / "• 2nd" badge.
+    const name = (actorLink?.innerText || actorLink?.textContent || "").split("\n").map(value => value.trim()).find(Boolean) || "";
+    return name.split(/\s+[•·]\s*/)[0].replace(/\s+/g, " ").trim();
+  }
+
+  // The redesigned feed has no actor-name classes; its header links to the
+  // actor's profile or company page before the post text. A repost or a
+  // "… likes this" card first links to whoever reposted or reacted, so the
+  // actor is the last such page linked before the text. Without a text box
+  // there is no anchor point, and this returns nothing.
+  function linkedInActorLinks(post, helpers) {
+    const text = linkedInTextElement(post, helpers);
+    if (!text?.compareDocumentPosition) return [];
+    const before = helpers.queryAllDeep("a[href*='/in/'], a[href*='/company/']", post)
+      .filter(link => text.compareDocumentPosition(link) & 2);
+    const actor = linkedInIdentityPath(before[before.length - 1]);
+    return actor ? before.filter(link => linkedInIdentityPath(link) === actor) : [];
+  }
+
+  function linkedInIdentityPath(link) {
+    try { return new URL(link.getAttribute("href"), location.href).pathname.match(/^\/(?:in|company)\/[^/]+/i)?.[0].toLowerCase() || ""; }
+    catch { return ""; }
   }
 
   function linkedInSourceUrl({ post, helpers }) {
@@ -472,14 +497,28 @@
 
   function linkedInIsOwnPost({ post, helpers }) {
     const profilePattern = /\/in\/([^/?#]+)/i;
-    const authoredLink = helpers.queryAllDeep("a[href*='/in/']", post)[0];
+    // A repost of someone else's post is not the viewer's own post, although
+    // the card opens with the viewer's "reposted this" header.
+    const actorLinks = linkedInActorLinks(post, helpers);
+    const authoredLink = actorLinks.length ? actorLinks[0] : helpers.queryAllDeep("a[href*='/in/']", post)[0];
     const signedInLink = helpers.queryAllDeep("[aria-label='Sidebar'] a[href*='/in/'], .global-nav__me a[href*='/in/'], a[aria-label*='profile' i][href*='/in/']")[0]
       // The feed's left rail starts with the viewer's own profile card; its
       // landmark label is localized, so fall back to the first aside there.
       || (/^\/feed(?:\/|$)/.test(location.pathname || "") ? helpers.queryAllDeep("main aside a[href*='/in/']")[0] : null);
     const authoredBy = helpers.identityFromHref(authoredLink?.getAttribute("href"), profilePattern);
     const signedInAs = helpers.identityFromHref(signedInLink?.getAttribute("href"), profilePattern);
-    return Boolean(authoredBy && signedInAs && authoredBy === signedInAs);
+    if (authoredBy && signedInAs && authoredBy === signedInAs) return true;
+    // Pages without a link to the viewer's profile (the profile page itself,
+    // 2026-10-12) still show the viewer's photo in the global nav's Me menu.
+    // The post header's avatar uses the same image asset, whatever the UI
+    // language.
+    const viewerPhoto = linkedInPhotoAsset(helpers.queryAllDeep("#meMenuV2WideComponentRef img, #meMenuV2NarrowComponentRef img")[0]);
+    const actorPhoto = actorLinks.map(link => linkedInPhotoAsset(link.querySelector?.("img"))).find(Boolean);
+    return Boolean(viewerPhoto && actorPhoto && viewerPhoto === actorPhoto);
+  }
+
+  function linkedInPhotoAsset(image) {
+    return String(image?.getAttribute?.("src") || "").match(/\/dms\/image\/v\d+\/([^/]+)\/profile-displayphoto/i)?.[1] || "";
   }
 
   function linkedInCaptureText({ post, helpers }) {
@@ -516,7 +555,9 @@
   }
 
   function linkedInCaptureMedia({ post, helpers }) {
-    let nodes = helpers.queryAllDeep(".update-components-image__image, .feed-shared-image__image, [data-testid*='media'] img, [data-test-id*='media'] img, img[alt='View image'], video", post);
+    // Post images are served from media.licdn.com/dms/image/…/feedshare-…; the
+    // English alt "View image" stays only as the last fallback.
+    let nodes = helpers.queryAllDeep(".update-components-image__image, .feed-shared-image__image, [data-testid*='media'] img, [data-test-id*='media'] img, img[src*='/feedshare-'], img[alt='View image'], video", post);
     if (!nodes.length) {
       nodes = helpers.queryAllDeep("img, video", post).filter(node => node.tagName === "VIDEO"
         || ((node.naturalWidth || node.width || 0) >= 180 && (node.naturalHeight || node.height || 0) >= 100

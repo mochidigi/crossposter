@@ -19,6 +19,7 @@ export function draftHistoryEntry(draft = {}, media = [], savedAt = Date.now()) 
     draft: {
       id: draft.id,
       text: String(draft.text || ""),
+      credit: draft.credit !== false,
       sourceUrl: String(draft.sourceUrl || ""),
       sourceNetwork: String(draft.sourceNetwork || "web"),
       sourceAuthor: String(draft.sourceAuthor || ""),

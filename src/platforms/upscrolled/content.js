@@ -54,8 +54,15 @@
         if (!caption) {
           // The tab reports "complete" before UpScrolled's client app has
           // rendered its navigation, so the launcher may still be on its way.
-          const launch = await helpers.waitForElement(findLauncher, LAUNCHER_WAIT_MS)
+          // A signed-out tab shows UpScrolled's sign-in form instead; stop as
+          // soon as it appears rather than waiting out the launcher.
+          const signInForm = () => [...document.querySelectorAll("input[type='password']")].some(helpers.isVisible);
+          const launch = await helpers.waitForElement(() => findLauncher() || (signInForm() ? "signed-out" : null), LAUNCHER_WAIT_MS)
             .catch(() => { throw new Error("Open UpScrolled's composer, then use the Crossposter sidebar."); });
+          if (launch === "signed-out") {
+            return { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, reason: "signed-out", stage: "locate",
+              error: "You are not signed in to UpScrolled in this browser. Sign in to UpScrolled, then use the Crossposter sidebar." };
+          }
           report("open");
           launch.click();
           const chooser = await helpers.waitForElement(() => helpers.findDialogWithText("Create a post"));

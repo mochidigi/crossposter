@@ -1,9 +1,9 @@
-// Display order, and the order a handoff fills composers in (one tab at a
-// time). LinkedIn goes last: its media checks are the slowest, and every
-// destination after it waits for them.
+// Display order, which is also the order the destinations take their turn in
+// front. loadInFront: in Chrome the tab opens blank and the page loads once,
+// at its turn (see loadsInFront in background.js).
 export const NATIVE_DESTINATIONS = Object.freeze([
   { id: "upscrolled", label: "UpScrolled", icon: "icons/networks/upscrolled.svg", homeUrl: "https://upscrolled.com/home" },
-  { id: "x", label: "X", icon: "icons/networks/x.svg", homeUrl: "https://x.com/compose/post" },
+  { id: "x", label: "X", icon: "icons/networks/x.svg", homeUrl: "https://x.com/compose/post", loadInFront: true },
   { id: "bluesky", label: "Bluesky", icon: "icons/networks/bluesky.svg", homeUrl: "https://bsky.app/" },
   { id: "instagram", label: "Instagram", icon: "icons/networks/instagram.svg", homeUrl: "https://www.instagram.com/" },
   { id: "threads", label: "Threads", icon: "icons/networks/threads.svg", homeUrl: "https://www.threads.com/" },

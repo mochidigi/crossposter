@@ -1,6 +1,7 @@
 import { ext } from "./shared/browser.js";
-import { isHandoffStage } from "./shared/handoff.js";
-import { createDraft } from "./shared/draft.js";
+import { foregroundQueue, isHandoffStage } from "./shared/handoff.js";
+import { handoffNetworkStatuses, handoffSummary } from "./shared/handoff-status.js";
+import { createDraft, postText } from "./shared/draft.js";
 import { resolveReshareMedia } from "./shared/downloaders.js";
 import { NATIVE_DESTINATIONS, nativeDestination } from "./shared/destinations.js";
 import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, isSidePanelUnavailableError, isTabGroupingUnsupportedError, settleWithin, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
@@ -9,7 +10,7 @@ import { expandCapturedLinks } from "./shared/links.js";
 import { clearHandoffMedia, deleteHandoffMedia, listHandoffMediaRecords, readHandoffMediaChunk } from "./shared/media-store.js";
 import { DRAFT_HISTORY_KEY, expireDraftHistory } from "./shared/draft-history.js";
 import { referencedMediaIds, unreferencedMediaIds } from "./shared/retention.js";
-import { contentScriptFilesForUrl, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, platformOriginsForIds, registeredPlatformContentScripts } from "./shared/content-scripts.js";
+import { contentScriptFilesForUrl, HANDOFF_OVERLAY_SCRIPT, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, platformOriginsForIds, registeredPlatformContentScripts } from "./shared/content-scripts.js";
 import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, inlineActionsEnabled, KNOWN_PLATFORMS_KEY, normalizeDefaultDestinations, normalizeEnabledPlatforms, PLATFORM_IDS, SHOW_INLINE_ACTIONS_KEY, storedEnabledPlatforms } from "./shared/preferences.js";
 import { linkedInPublishCandidate } from "./shared/linkedin-monitor.js";
 import { linkedInDashManifestRequest, linkedInDashPlaylist, linkedInVhsPlaylist, linkedInVideoRequest, selectLinkedInVideoRequest } from "./platforms/linkedin/network.js";
@@ -367,7 +368,7 @@ async function readPlatformPreferences() {
 function synchronizePlatformContentScripts(enabledPlatforms) {
   platformContentScriptSyncQueue = platformContentScriptSyncQueue.catch(() => {}).then(async () => {
     const enabled = normalizeEnabledPlatforms(enabledPlatforms ?? (await readPlatformPreferences()).enabledPlatforms);
-    const managedIds = new Set(PLATFORM_CONTENT_SCRIPTS.map(script => script.id));
+    const managedIds = new Set([...PLATFORM_CONTENT_SCRIPTS.map(script => script.id), HANDOFF_OVERLAY_SCRIPT.id]);
     const registered = await ext.scripting.getRegisteredContentScripts();
     const existingIds = registered.map(script => script.id).filter(id => managedIds.has(id));
     if (existingIds.length) await ext.scripting.unregisterContentScripts({ ids: existingIds });
@@ -445,6 +446,10 @@ async function broadcastInlineActionPreference(enabled) {
 }
 
 ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "GET_HANDOFF_OVERLAY") {
+    handoffOverlayState(sender.tab?.id).then(sendResponse).catch(() => sendResponse({ active: false }));
+    return true;
+  }
   if (message?.type === "NATIVE_COMPOSER_STAGE") {
     updateComposerStage(message, sender.tab?.id).then(() => sendResponse({ ok: true }))
       .catch(() => sendResponse({ ok: false }));
@@ -938,7 +943,7 @@ async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboa
     tabIds: [],
     lastActiveTabId: null,
     pendingVideoResolution,
-    handoff: { state: "idle", text: draft.text || "", media: [], networks: [] },
+    handoff: { state: "idle", text: postText(draft), media: [], networks: [] },
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
@@ -1101,7 +1106,83 @@ async function openTraySurface(sender) {
   return "window";
 }
 
+// Each store ships its own build, and only the Firefox manifest declares gecko
+// settings (Chrome defines `browser` too, so that global proves nothing).
+const isFirefoxBuild = Boolean(ext.runtime.getManifest?.()?.browser_specific_settings?.gecko);
+
+// X's page, loaded in a hidden tab, keeps an empty compose dialog in Chrome
+// even once shown (2026-10-12), so its tab opens blank and loads only at its
+// turn in front. Firefox renders it hidden, so it loads with the others there.
+function loadsInFront(target) {
+  return target?.loadInFront === true && !isFirefoxBuild;
+}
+
+// The overlay that covers a destination tab while it fills
+// (handoff-overlay.js): every destination's row, the current one highlighted.
+const overlayIcons = new Map();
+function overlayIcon(destination) {
+  if (!overlayIcons.has(destination.id)) {
+    overlayIcons.set(destination.id, fetch(ext.runtime.getURL(destination.icon))
+      .then(response => response.text())
+      .then(svg => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`)
+      .catch(() => ""));
+  }
+  return overlayIcons.get(destination.id);
+}
+
+// Overlay states are worked out asynchronously and can arrive out of order
+// (a destination settling, then the next one's turn starting); each carries a
+// rising sequence number, and the overlay ignores any older than it has shown.
+// It is clock-based so it keeps rising after Chrome restarts the worker.
+let overlaySequence = 0;
+
+async function handoffOverlayState(tabId) {
+  overlaySequence = (overlaySequence + 1) % 1000;
+  const sequence = Date.now() * 1000 + overlaySequence;
+  return { ...await overlayStateFor(tabId), sequence };
+}
+
+async function overlayStateFor(tabId) {
+  await backgroundStateReady.catch(() => {});
+  if (!Number.isInteger(tabId)) return { active: false };
+  for (const session of crosspostSessions.values()) {
+    const handoff = session.handoff || {};
+    const network = Object.keys(handoff.destinationTabs || {}).find(id => handoff.destinationTabs[id] === tabId);
+    if (!network) continue;
+    const running = handoff.state === "filling" || handoff.retrying === network;
+    // A destination that has just settled keeps its overlay while its tab is
+    // still in front, so its bare page doesn't show before the next turn.
+    if (!running || (!handoff.progress?.[network] && !(await ext.tabs.get(tabId).catch(() => null))?.active)) return { active: false };
+    // The same rows and heading as Compose's status panel and the sidebar.
+    const statuses = handoffNetworkStatuses(handoff);
+    const rows = await Promise.all(statuses.map(async status => {
+      const destination = nativeDestination(status.network);
+      return { label: status.label, text: status.text, tone: status.tone, current: status.network === network, icon: destination ? await overlayIcon(destination) : "" };
+    }));
+    return { active: true, title: handoffSummary(handoff, statuses).title, rows };
+  }
+  return { active: false };
+}
+
+// Every session change reaches the overlays too: a stage moves on, a
+// destination settles (its overlay goes), a retry starts, or the crosspost is
+// cancelled.
+function syncHandoffOverlays() {
+  for (const session of crosspostSessions.values()) {
+    for (const tabId of Object.values(session.handoff?.destinationTabs || {})) {
+      if (Number.isInteger(tabId)) showHandoffOverlay(tabId);
+    }
+  }
+}
+
+function showHandoffOverlay(tabId) {
+  return handoffOverlayState(tabId)
+    .then(state => ext.tabs.sendMessage(tabId, { type: "HANDOFF_OVERLAY", ...state }, { frameId: 0 }))
+    .catch(() => {});
+}
+
 function notifyTray() {
+  syncHandoffOverlays();
   try {
     crosspostSessionPayload().then(payload => {
       const sent = ext.runtime.sendMessage({ type: "CROSSPOST_SESSIONS_UPDATED", ...payload });
@@ -1119,7 +1200,7 @@ async function updateComposerStage(message, tabId) {
   if (!isHandoffStage(message.stage) || typeof message.network !== "string"
     || !running || session.handoff.attemptId !== message.handoffId
     || session.handoff.destinationTabs?.[message.network] !== tabId) return;
-  session.handoff.composerProgress = { network: message.network, stage: message.stage };
+  session.handoff.progress = { ...(session.handoff.progress || {}), [message.network]: message.stage };
   session.updatedAt = Date.now();
   await persistCrosspostSessions(); notifyTray();
 }
@@ -1133,8 +1214,7 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
   const targets = NATIVE_DESTINATIONS.filter(destination => requested.has(destination.id));
   if (!targets.length) throw new Error("Choose at least one supported destination.");
   const entries = [];
-  const results = [];
-  session.handoff = { ...handoff, attemptId: String(attemptId || ""), networks: targets.map(target => target.id), state: "filling", currentNetwork: "", error: "", results: [] };
+  session.handoff = { ...handoff, attemptId: String(attemptId || ""), networks: targets.map(target => target.id), state: "filling", progress: {}, error: "", results: [] };
   session.updatedAt = Date.now();
   await persistCrosspostSessions(); notifyTray();
 
@@ -1160,27 +1240,52 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
   }
   catch (error) { if (!tabGroupsUnsupported) groupError = error instanceof Error ? error.message : String(error); }
 
-  for (const entry of entries) {
-    if (!isCurrentHandoff(session.id, attemptId)) break;
-    const { target, tab, error } = entry;
-    session.handoff = { ...session.handoff, currentNetwork: target.id,
-      composerProgress: { network: target.id, stage: "locate" },
-      results: [...results], tabGroupId, groupError };
+  // The tabs above load at the same time in the background. Each destination
+  // then fills in turn with its tab in front, covered by the overlay
+  // (handoff-overlay.js), and Compose comes back after the last one (see
+  // fillNativeComposer).
+  const finished = new Map();
+  const orderedResults = () => targets.map(target => finished.get(target.id)).filter(Boolean);
+  const settle = async (target, entry) => {
+    if (!isCurrentHandoff(session.id, attemptId)) return;
+    finished.set(target.id, entry);
+    const { [target.id]: _settled, ...progress } = session.handoff.progress || {};
+    session.handoff = { ...session.handoff, progress, results: orderedResults(), tabGroupId, groupError };
     session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
-    if (error) {
-      results.push({ network: target.id, error, result: null });
-      continue;
-    }
-    try { results.push({ network: target.id, ...await fillNativeComposer(target, tab, { ...handoff, handoffId: attemptId }) }); }
-    catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      results.push({ network: target.id, tabId: tab.id, error: message, result: null });
-    }
-  }
+  };
+  const destinationTabIds = entries.filter(entry => entry.tab).map(entry => entry.tab.id);
+  const inFront = foregroundQueue(() => returnToTab(sourceTabId, destinationTabIds));
+  const fill = async ({ target, tab, error }) => {
+    if (error) return settle(target, { network: target.id, error, result: null });
+    if (!isCurrentHandoff(session.id, attemptId)) return;
+    // Its turn: the row leaves "Waiting", and the overlay covers the page
+    // before the tab comes to the front.
+    session.handoff = { ...session.handoff, progress: { ...(session.handoff.progress || {}), [target.id]: "locate" } };
+    session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
+    await showHandoffOverlay(tab.id);
+    let entry;
+    try { entry = { network: target.id, ...await fillNativeComposer(target, tab, { ...handoff, handoffId: attemptId }) }; }
+    catch (caught) { entry = { network: target.id, tabId: tab.id, error: caught instanceof Error ? caught.message : String(caught), result: null }; }
+    await settle(target, entry);
+  };
+  session.handoff = { ...session.handoff, tabGroupId, groupError };
+  await Promise.all(entries.map(entry => entry.tab ? inFront(() => fill(entry)) : fill(entry)));
+  await inFront.idle();
+  const results = orderedResults();
   if (!isCurrentHandoff(session.id, attemptId)) return { results, tabGroupId, groupError, cancelled: true };
-  session.handoff = { ...session.handoff, state: "ready", currentNetwork: "", results, tabGroupId, groupError };
+  session.handoff = { ...session.handoff, state: "ready", progress: {}, results, tabGroupId, groupError };
   session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
   return { results, tabGroupId, groupError };
+}
+
+// Brings Compose (or the tab the user was on) back after a destination was
+// filled in front, unless the user has moved to another tab meanwhile.
+async function returnToTab(tabId, fromTabIds) {
+  const tab = Number.isInteger(tabId) ? await ext.tabs.get(tabId).catch(() => null) : null;
+  if (!tab) return;
+  const [active] = await ext.tabs.query({ active: true, windowId: tab.windowId }).catch(() => []);
+  if (active && active.id !== tab.id && !fromTabIds.includes(active.id)) return;
+  await ext.tabs.update(tab.id, { active: true }).catch(() => {});
 }
 
 // Fills one destination of a finished crosspost again: reloads its tab (or
@@ -1199,22 +1304,32 @@ async function retryNativeHandoff(sessionId, network) {
   const attemptId = handoff.attemptId;
   const previous = (handoff.results || []).find(item => item.network === network);
   const knownTabId = [previous?.tabId, handoff.destinationTabs?.[network]].find(Number.isInteger);
-  let tab = Number.isInteger(knownTabId) ? await ext.tabs.update(knownTabId, { url: target.homeUrl }).catch(() => null) : null;
+  // A destination that loads in front loads at its turn (fillNativeComposer).
+  let tab = Number.isInteger(knownTabId)
+    ? await (loadsInFront(target) ? ext.tabs.get(knownTabId) : ext.tabs.update(knownTabId, { url: target.homeUrl })).catch(() => null)
+    : null;
   if (!tab) {
     tab = await createNativeComposerTab(target, session, attemptId, session.windowId, session.sourceTabId);
     session.groupId = await groupComposerTabs(session.tabIds, session.groupId).catch(() => session.groupId);
   }
-  session.handoff = { ...session.handoff, retrying: network, composerProgress: { network, stage: "locate" },
+  session.handoff = { ...session.handoff, retrying: network, progress: { [network]: "locate" },
     destinationTabs: { ...(session.handoff.destinationTabs || {}), [network]: tab.id } };
   session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
+  // Like the first fill: in front, then back to wherever the user retried from.
+  const [before] = await ext.tabs.query({ active: true, windowId: tab.windowId }).catch(() => []);
+  const inFront = foregroundQueue(() => before && before.id !== tab.id ? returnToTab(before.id, [tab.id]) : undefined);
+  const retryHandoff = { text: handoff.text || "", media: handoff.media || [], handoffId: attemptId };
   let entry;
-  try { entry = { network, ...await fillNativeComposer(target, tab, { text: handoff.text || "", media: handoff.media || [], handoffId: attemptId }) }; }
+  try {
+    entry = { network, ...await inFront(() => fillNativeComposer(target, tab, retryHandoff)) };
+  }
   catch (caught) { entry = { network, tabId: tab.id, error: caught instanceof Error ? caught.message : String(caught), result: null }; }
+  await inFront.idle();
   if (!isCurrentHandoff(session.id, attemptId)) return { cancelled: true };
   const others = (session.handoff.results || []).filter(item => item.network !== network);
   const results = session.handoff.networks.map(id => id === network ? entry : others.find(item => item.network === id)).filter(Boolean);
   const { retrying: _retrying, ...rest } = session.handoff;
-  session.handoff = { ...rest, results, composerProgress: null };
+  session.handoff = { ...rest, results, progress: {} };
   session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
   return { result: entry };
 }
@@ -1256,7 +1371,9 @@ async function createNativeComposerTab(target, session, attemptId, sourceWindowI
   // grouped. The filling phase activates them one at a time.
   incrementPendingNativeTabs(sourceWindowId);
   try {
-    const tab = await ext.tabs.create(composerTabProperties(target.homeUrl, sourceWindowId, false));
+    // A destination that loads in front waits on Crossposter's own page
+    // (handoff-wait.html) until its turn, rather than a white about:blank.
+    const tab = await ext.tabs.create(composerTabProperties(loadsInFront(target) ? ext.runtime.getURL("handoff-wait.html") : target.homeUrl, sourceWindowId, false));
     if (!isCurrentHandoff(session.id, attemptId)) {
       await ext.tabs.remove(tab.id).catch(() => {});
       throw new Error("Crossposting was cancelled.");
@@ -1270,22 +1387,37 @@ async function createNativeComposerTab(target, session, attemptId, sourceWindowI
   } finally { decrementPendingNativeTabs(sourceWindowId); }
 }
 
+// Fills one destination with its tab in front. A handoff's tabs load in the
+// background together, but their fills take turns in front (foregroundQueue),
+// under the overlay. Sites built for a visible page broke in hidden tabs in
+// ways a result can't show (2026-10-12): X in Chrome built no compose editor,
+// UpScrolled kept the caption in its textarea but never drew it, and LinkedIn
+// ran about four times slower.
 async function fillNativeComposer(target, initialTab, handoff) {
   let tab = initialTab;
-  tab = await ext.tabs.update(tab.id, { active: true });
+  const deliver = async () => {
+    try { return await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff: { ...handoff, inFront: true } }); }
+    catch (error) { return { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
+  };
+  // A destination that loads in front (X in Chrome) opened blank and loads
+  // now, once, with its tab visible. Otherwise the page loaded in the
+  // background, and Firefox's tabs.warmup() draws the tab before the switch so
+  // no blank frame shows (Chrome has no equivalent).
+  const loadNow = loadsInFront(target);
+  if (!loadNow) {
+    try { await settleWithin(Promise.resolve(ext.tabs.warmup?.(tab.id)), 1500, "warmup"); } catch {}
+  }
+  tab = await ext.tabs.update(tab.id, loadNow ? { url: target.homeUrl, active: true } : { active: true });
   if (tab.windowId != null) await ext.windows.update(tab.windowId, { focused: true }).catch(() => {});
   await waitForTab(tab.id, tab.status, target.label);
-  let result;
-  try { result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
-  catch (error) { result = { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
+  let result = await deliver();
   // If X's SPA ignored its visible compose control, use the canonical route as
   // a deterministic fallback and retry after the document has loaded. This is
   // deliberately limited to opening/filling the composer; posting stays manual.
   if (shouldRetryCanonicalComposer(target.id, result)) {
     tab = await ext.tabs.update(tab.id, { url: target.homeUrl, active: true });
     await waitForTab(tab.id, tab.status, target.label);
-    try { result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff }); }
-    catch (error) { result = { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
+    result = await deliver();
   }
   const retryMedia = shouldRetryMediaAttachment(target.id, result, handoff.media.length);
   const retryText = shouldRetryTextInsertion(target.id, result, handoff.text);

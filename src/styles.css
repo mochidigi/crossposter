@@ -134,6 +134,22 @@ textarea {
 }
 textarea::placeholder { color: var(--text-muted); }
 
+/* The credit sits in the post field's frame as its first line: part of what
+   each destination receives, but not of the editable text. */
+.post-field { border: 1px solid var(--line); background: var(--surface); }
+.post-field:has(textarea:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }
+.post-field textarea { display: block; border: 0; }
+.post-field textarea:focus-visible { outline: none; }
+.post-field:has(.credit-line:not([hidden])) textarea { padding-top: 6px; }
+.credit-line { display: flex; align-items: center; gap: 12px; padding: 12px 12px 0 18px; font-size: 16px; }
+.credit-line[hidden] { display: none; }
+.credit-text { flex: 1 1 auto; min-width: 0; color: var(--text-soft); font-weight: 650; overflow-wrap: anywhere; }
+.credit-line.off .credit-text { color: var(--text-muted); font-weight: 400; text-decoration: line-through; }
+.credit-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; min-height: 28px; padding: 4px 10px 4px 6px; border: 1px solid var(--line-soft); color: var(--ink); background: var(--surface-muted); cursor: pointer; font-size: 12px; font-weight: 650; }
+.credit-toggle:hover { border-color: var(--line); }
+.credit-toggle::before { width: 24px; height: 14px; flex: 0 0 auto; border-radius: 7px; background: radial-gradient(circle at 17px 50%, var(--on-accent) 0 5px, transparent 5.5px), var(--accent); content: ""; }
+.credit-toggle[aria-pressed="false"]::before { background: radial-gradient(circle at 7px 50%, var(--surface) 0 5px, transparent 5.5px), var(--line-soft); }
+
 input, select { color: var(--ink); background: var(--surface); }
 .text-meta, .attach-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 9px; color: var(--ink); font-size: 12px; }
 .text-meta a { font-weight: 650; text-underline-offset: 3px; }
@@ -394,72 +410,140 @@ input, select { color: var(--ink); background: var(--surface); }
 .popup .onboarding-actions .primary, .popup .onboarding-actions .secondary { min-width: 0; min-height: 38px; padding: 8px 11px; }
 
 
-.clip-dialog { width: 100%; max-width: min(760px, calc(100vw - 30px)); padding: 0; border: 0; color: var(--ink); background: transparent; }
-.clip-dialog::backdrop { background: rgba(0, 0, 0, .76); }
-.clip-card { padding: 28px; border: 1px solid var(--line); border-radius: 2px; color: var(--ink); background: var(--surface); box-shadow: none; }
 .clip-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .clip-head h2 { margin: 6px 0 16px; }
 .clip-close { display: grid; width: 36px; height: 36px; padding: 0; place-items: center; border: 1px solid var(--line); border-radius: 1px; color: var(--ink); background: var(--surface); cursor: pointer; }
 .clip-close:hover { color: var(--ink-inverse); background: var(--ink); }
-.clip-stage { position: relative; overflow: hidden; width: 100%; border: 1px solid var(--line); border-radius: 1px; background: var(--media-bg); }
-.clip-dialog video { display: block; width: 100%; max-height: 390px; border: 0; background: var(--media-bg); }
-.clip-crop-overlay { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.clip-crop-box { position: absolute; box-sizing: border-box; border: 2px dashed #fff; outline: 0; background: rgba(255, 255, 255, .04); box-shadow: 0 0 0 9999px rgba(0, 0, 0, .58); cursor: move; pointer-events: auto; touch-action: none; }
-.clip-crop-box:focus-visible { border-style: solid; outline: 2px solid #111; outline-offset: -5px; }
-.clip-crop-box[data-disabled="true"] { cursor: wait; pointer-events: none; }
-.clip-crop-handle { position: absolute; width: 14px; height: 14px; border: 2px solid #111; background: #fff; }
-.clip-crop-handle.nw { top: -2px; left: -2px; cursor: nwse-resize; }
-.clip-crop-handle.ne { top: -2px; right: -2px; cursor: nesw-resize; }
-.clip-crop-handle.sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
-.clip-crop-handle.se { right: -2px; bottom: -2px; cursor: nwse-resize; }
-.editor-field { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; }
-.editor-field select { min-height: 36px; padding: 6px 30px 6px 9px; border: 1px solid var(--line); background: var(--surface); }
-.clip-markers + .editor-field { margin-top: 14px; }
-.image-stage { display: grid; min-height: 260px; max-height: 58vh; place-items: center; overflow: auto; border: 1px solid var(--line); background: var(--stage-bg); }
-.image-stage canvas { display: block; cursor: crosshair; touch-action: none; }
-.image-toolstrip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.image-toolstrip button { min-height: 34px; padding: 6px 10px; border: 1px solid var(--line); color: var(--ink); background: var(--surface); cursor: pointer; font-weight: 650; }
-.image-toolstrip button.active { color: var(--ink-inverse); background: var(--ink); }
-.image-color-control { display: inline-flex; min-height: 34px; align-items: center; gap: 7px; padding: 4px 7px 4px 10px; border: 1px solid var(--line); font-size: 12px; font-weight: 650; }
-.image-color-control input { width: 26px; height: 24px; padding: 0; border: 0; background: transparent; cursor: pointer; }
-.image-color-control input::-webkit-color-swatch-wrapper { padding: 1px; }
-.image-color-control input::-webkit-color-swatch { border: 1px solid var(--line); }
-.image-toolbar-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
-.image-toolstrip .image-icon-button { display: grid; width: 34px; padding: 0; place-items: center; }
-.image-crop-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -2px 0 10px; padding: 8px; border: 1px solid var(--line); background: var(--surface-muted); }
-.image-crop-presets, .image-crop-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.image-crop-controls button { min-height: 32px; padding: 5px 9px; border: 1px solid var(--line); color: var(--ink); background: var(--surface); cursor: pointer; font-size: 12px; font-weight: 650; }
-.image-crop-presets button.active { color: var(--ink-inverse); background: var(--ink); }
-.image-crop-actions button { display: grid; width: 34px; padding: 0; place-items: center; }
-.image-crop-actions #imageCropApply { color: var(--ink-inverse); background: var(--ink); }
-.image-dialog { max-width: min(940px, calc(100vw - 30px)); overflow-x: hidden; }
-.image-dialog .canvas-container { flex: 0 0 auto; }
-.image-dialog textarea[data-fabric="textarea"] { position: fixed !important; top: 0 !important; left: 0 !important; width: 1px !important; min-height: 0 !important; height: 1px !important; padding: 0 !important; border: 0 !important; overflow: hidden !important; }
-.clip-playback, .clip-markers, .clip-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.clip-playback { margin: 14px 0; color: var(--text-muted); font-size: 13px; }
-.clip-range { margin: 18px 0; }
-.clip-range-labels { display: flex; align-items: center; justify-content: space-between; gap: 20px; font-weight: 650; }
-.clip-range-labels label { display: flex; gap: 8px; }
-.clip-range-labels label:last-child { text-align: right; }
-.clip-range-track { position: relative; height: 32px; margin-top: 4px; }
-.clip-range-track::before { position: absolute; top: 50%; right: 0; left: 0; height: 2px; background: linear-gradient(to right, var(--line-soft) 0 var(--clip-start, 0%), var(--ink) var(--clip-start, 0%) var(--clip-end, 100%), var(--line-soft) var(--clip-end, 100%) 100%); content: ""; transform: translateY(-50%); }
-.clip-range-track input[type="range"] { position: absolute; inset: 0; z-index: 2; width: 100%; height: 32px; margin: 0; appearance: none; border: 0; outline: 0; background: transparent; cursor: pointer; pointer-events: none; }
-.clip-range-track #clipEnd { z-index: 3; }
-.clip-range-track.start-on-top #clipStart, .clip-range-track input[type="range"]:focus { z-index: 4; }
-.clip-range-track input[type="range"]::-webkit-slider-runnable-track { height: 2px; border: 0; background: transparent; }
-.clip-range-track input[type="range"]::-webkit-slider-thumb { width: 8px; height: 24px; margin-top: -11px; appearance: none; border: 1px solid var(--ink); border-radius: 0; background: var(--ink); cursor: ew-resize; pointer-events: auto; }
-.clip-range-track input[type="range"]::-moz-range-track { height: 2px; border: 0; background: transparent; }
-.clip-range-track input[type="range"]::-moz-range-progress { background: transparent; }
-.clip-range-track input[type="range"]::-moz-range-thumb { width: 8px; height: 24px; border: 1px solid var(--ink); border-radius: 0; background: var(--ink); cursor: ew-resize; pointer-events: auto; }
-.clip-range-track input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--ink); outline-offset: 3px; }
-.clip-range-track input[type="range"]:focus-visible::-moz-range-thumb { outline: 2px solid var(--ink); outline-offset: 3px; }
-.clip-range-track input[type="range"]:disabled { cursor: wait; opacity: .45; }
-.clip-markers { justify-content: flex-start; flex-wrap: wrap; }
-.clip-crop-help { margin: 8px 0 0; }
-.clip-dialog progress { width: 100%; height: 10px; margin-top: 18px; accent-color: var(--ink); }
-.clip-note { text-align: left; }
-.clip-actions { justify-content: flex-end; margin-top: 18px; }
+.clip-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 18px; }
 .clip-actions button { min-width: 110px; }
+
+/* Media editors: the picture sits on a dark, dotted "light table" so it reads
+   the same in both themes; the controls around it follow the page's chrome.
+   Signal pink (the logo's dot) marks only what will be kept: the trim window. */
+.studio-dialog { width: min(1180px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px)); max-width: none; max-height: none; padding: 0; border: 0; color: var(--ink); background: transparent; }
+.studio-dialog::backdrop { background: var(--scrim); }
+.studio { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto auto; width: 100%; height: 100%; border: 1px solid var(--line); background: var(--surface); }
+.studio-head { display: flex; min-height: 60px; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px 10px 22px; border-bottom: 1px solid var(--line-soft); }
+.studio-title { display: flex; min-width: 0; align-items: baseline; gap: 12px; }
+.studio-title h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; white-space: nowrap; }
+.studio-meta { overflow: hidden; color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.studio-head-actions { display: flex; align-items: center; gap: 2px; }
+.studio-icon { display: inline-grid; width: 38px; height: 38px; padding: 0; place-items: center; border: 1px solid transparent; border-radius: 2px; color: var(--ink); background: transparent; cursor: pointer; }
+.studio-icon:hover:not(:disabled) { border-color: var(--line); }
+.studio-icon:disabled { opacity: .28; }
+.studio-divider, .tool-divider { width: 1px; height: 22px; margin: 0 6px; background: var(--line-soft); }
+
+.studio-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 18px; padding: 9px 14px; border-bottom: 1px solid var(--line-soft); background: var(--surface-muted); }
+.tool-group, .tool-options, .aspect-chips, .swatches { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.tool-options { gap: 10px; }
+.swatches { gap: 8px; }
+.tool { display: inline-flex; min-height: 36px; align-items: center; gap: 7px; padding: 6px 11px; border: 1px solid transparent; border-radius: 2px; color: var(--ink); background: transparent; cursor: pointer; font-size: 13px; font-weight: 650; white-space: nowrap; }
+.tool:hover:not(:disabled) { border-color: var(--line-soft); background: var(--surface); }
+.tool.active, .tool-confirm { border-color: var(--ink); color: var(--ink-inverse); background: var(--ink); }
+.tool.active:hover:not(:disabled), .tool-confirm:hover:not(:disabled) { border-color: var(--ink); color: var(--ink-inverse); background: var(--ink-hover); }
+.tool-danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.tool-label { color: var(--text-muted); font-size: 13px; font-weight: 650; }
+.chip { display: inline-flex; min-height: 34px; align-items: center; gap: 8px; padding: 5px 11px 5px 9px; border: 1px solid var(--line-soft); border-radius: 2px; color: var(--ink); background: var(--surface); cursor: pointer; font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.chip:hover:not(:disabled) { border-color: var(--ink); }
+.chip.active { border-color: var(--ink); color: var(--ink-inverse); background: var(--ink); }
+/* Each crop chip draws its own shape. */
+.aspect-glyph { display: inline-block; flex: none; border: 1.5px solid currentColor; border-radius: 1px; }
+.aspect-glyph.free, .aspect-glyph.original { width: 16px; height: 12px; border-style: dashed; }
+.aspect-glyph.square { width: 13px; height: 13px; }
+.aspect-glyph.portrait { width: 12px; height: 15px; }
+.aspect-glyph.landscape { width: 18px; height: 10px; }
+.aspect-glyph.story { width: 9px; height: 16px; }
+.swatch { position: relative; width: 26px; height: 26px; flex: none; padding: 0; border: 1px solid var(--line-soft); border-radius: 50%; background: var(--swatch, transparent); cursor: pointer; }
+.swatch:hover { transform: scale(1.08); }
+.swatch.active { box-shadow: 0 0 0 2px var(--surface-muted), 0 0 0 4px var(--ink); }
+.swatch-custom { display: inline-block; overflow: hidden; background: conic-gradient(#ff2d55, #ffcc00, #30d158, #0a84ff, #bf5af2, #ff2d55); }
+.swatch-custom.active { background: var(--swatch, conic-gradient(#ff2d55, #ffcc00, #30d158, #0a84ff, #bf5af2, #ff2d55)); }
+.swatch-custom input { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.swatch-custom:focus-within { outline: 2px solid var(--ink); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .swatch:hover { transform: none; } }
+
+.studio-stage { position: relative; display: grid; min-height: 0; padding: 28px; place-items: center; overflow: auto; background-color: #1a1a19; background-image: radial-gradient(rgb(255 255 255 / 7%) 1px, transparent 1.4px); background-size: 20px 20px; }
+.studio-stage .canvas-container { flex: 0 0 auto; box-shadow: 0 10px 34px rgb(0 0 0 / 45%); }
+.studio-stage canvas { display: block; touch-action: none; }
+.studio-stage.is-loading > * { visibility: hidden; }
+.studio-dialog textarea[data-fabric="textarea"] { position: fixed !important; top: 0 !important; left: 0 !important; width: 1px !important; min-height: 0 !important; height: 1px !important; padding: 0 !important; border: 0 !important; overflow: hidden !important; }
+
+.studio-foot { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 14px 12px 22px; border-top: 1px solid var(--line-soft); }
+.studio-status { min-width: 0; flex: 1; }
+.studio-hint { margin: 0; color: var(--text-muted); font-size: 13px; }
+.hint-action { padding: 0; border: 0; color: var(--ink); background: none; cursor: pointer; font: inherit; font-weight: 650; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.hint-action:hover { text-decoration-thickness: 2px; }
+.studio-status .errors { margin: 6px 0 0; }
+.studio-status .errors:empty { display: none; }
+.studio-actions { display: flex; flex: none; gap: 8px; }
+.studio-actions button { min-width: 112px; justify-content: center; }
+
+/* Video: the frame hugs the picture, so the crop box maps onto video pixels. */
+.clip-frame { position: relative; width: min(100%, 640px); aspect-ratio: 16 / 9; overflow: hidden; background: #000; box-shadow: 0 10px 34px rgb(0 0 0 / 45%); }
+.clip-frame video { display: block; width: 100%; height: 100%; object-fit: contain; cursor: pointer; }
+.clip-crop-overlay { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.clip-crop-box {
+  position: absolute; box-sizing: border-box; border: 2px solid #fff; outline: 0; cursor: move; pointer-events: auto; touch-action: none;
+  box-shadow: 0 0 0 9999px rgb(12 12 12 / 62%);
+  /* rule-of-thirds guides */
+  background:
+    linear-gradient(to right, transparent calc(100% / 3 - .5px), rgb(255 255 255 / 45%) 0 calc(100% / 3 + .5px), transparent 0 calc(200% / 3 - .5px), rgb(255 255 255 / 45%) 0 calc(200% / 3 + .5px), transparent 0),
+    linear-gradient(to bottom, transparent calc(100% / 3 - .5px), rgb(255 255 255 / 45%) 0 calc(100% / 3 + .5px), transparent 0 calc(200% / 3 - .5px), rgb(255 255 255 / 45%) 0 calc(200% / 3 + .5px), transparent 0);
+}
+.clip-crop-box:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.clip-crop-box[data-disabled="true"] { cursor: wait; pointer-events: none; }
+/* Corner brackets drawn inside the frame, so they stay visible when the frame
+   touches the picture's edge. */
+.clip-crop-handle { position: absolute; width: 26px; height: 26px; border: 0 solid #fff; filter: drop-shadow(0 0 1px rgb(17 17 17 / 85%)); }
+.clip-crop-handle.nw { top: -2px; left: -2px; border-width: 5px 0 0 5px; cursor: nwse-resize; }
+.clip-crop-handle.ne { top: -2px; right: -2px; border-width: 5px 5px 0 0; cursor: nesw-resize; }
+.clip-crop-handle.sw { bottom: -2px; left: -2px; border-width: 0 0 5px 5px; cursor: nesw-resize; }
+.clip-crop-handle.se { right: -2px; bottom: -2px; border-width: 0 5px 5px 0; cursor: nwse-resize; }
+
+.clip-timeline { display: grid; gap: 10px; padding: 12px 22px 10px; border-top: 1px solid var(--line-soft); }
+.clip-transport { display: flex; align-items: center; gap: 12px; }
+.clip-play { width: 40px; height: 40px; border-color: var(--ink); border-radius: 50%; color: var(--ink-inverse); background: var(--ink); }
+.clip-play:hover:not(:disabled) { background: var(--ink-hover); }
+.clip-play .icon-pause, .clip-play.is-playing .icon-play { display: none; }
+.clip-play.is-playing .icon-pause { display: block; }
+.clip-clock { font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.clip-clock-total { color: var(--text-muted); font-weight: 500; }
+.clip-transport-actions { display: flex; gap: 4px; margin-left: auto; }
+.clip-transport-actions .tool { border-color: var(--line-soft); }
+/* Trim handles sit just outside the kept window: the start input is shifted
+   left and the end input right by one handle width, so each thumb's inner
+   edge lines up with its value. */
+.clip-range-track { --handle: 18px; position: relative; height: 64px; margin: 0 var(--handle); touch-action: none; cursor: pointer; user-select: none; }
+.clip-filmstrip { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 2px; background: repeating-linear-gradient(90deg, #2b2b29 0 62px, #343432 62px 64px); }
+.clip-range-track::before, .clip-range-track::after { position: absolute; z-index: 1; top: 0; bottom: 0; background: rgb(18 18 17 / 64%); content: ""; pointer-events: none; }
+.clip-range-track::before { left: 0; width: var(--clip-start, 0%); }
+.clip-range-track::after { right: 0; width: calc(100% - var(--clip-end, 100%)); }
+.clip-window { position: absolute; z-index: 1; top: 0; bottom: 0; left: var(--clip-start, 0%); right: calc(100% - var(--clip-end, 100%)); border-block: 3px solid var(--signal); pointer-events: none; }
+.clip-playhead { position: absolute; z-index: 2; top: -7px; bottom: -7px; left: var(--clip-playhead, 0%); width: 3px; margin-left: -1.5px; border-radius: 2px; background: #fff; box-shadow: 0 0 0 1px rgb(0 0 0 / 60%); pointer-events: none; }
+.clip-range-track input[type="range"] { position: absolute; z-index: 3; top: 0; width: calc(100% + var(--handle)); height: 100%; margin: 0; appearance: none; border: 0; outline: 0; background: transparent; cursor: ew-resize; pointer-events: none; }
+.clip-range-track #clipStart { left: calc(var(--handle) * -1); }
+.clip-range-track #clipEnd { left: 0; z-index: 4; }
+.clip-range-track.start-on-top #clipStart, .clip-range-track input[type="range"]:focus-visible { z-index: 5; }
+.clip-range-track input[type="range"]::-webkit-slider-runnable-track { height: 100%; border: 0; background: transparent; }
+.clip-range-track input[type="range"]::-moz-range-track { height: 100%; border: 0; background: transparent; }
+.clip-range-track input[type="range"]::-moz-range-progress { background: transparent; }
+.clip-range-track input[type="range"]::-webkit-slider-thumb { width: var(--handle); height: 64px; appearance: none; border: 0; background: var(--signal) linear-gradient(#fff, #fff) center / 2px 20px no-repeat; cursor: ew-resize; pointer-events: auto; }
+.clip-range-track input[type="range"]::-moz-range-thumb { width: var(--handle); height: 64px; border: 0; border-radius: 0; background: var(--signal) linear-gradient(#fff, #fff) center / 2px 20px no-repeat; cursor: ew-resize; pointer-events: auto; }
+.clip-range-track #clipStart::-webkit-slider-thumb { border-radius: 5px 0 0 5px; }
+.clip-range-track #clipEnd::-webkit-slider-thumb { border-radius: 0 5px 5px 0; }
+.clip-range-track #clipStart::-moz-range-thumb { border-radius: 5px 0 0 5px; }
+.clip-range-track #clipEnd::-moz-range-thumb { border-radius: 0 5px 5px 0; }
+.clip-range-track input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--ink); outline-offset: 2px; }
+.clip-range-track input[type="range"]:focus-visible::-moz-range-thumb { outline: 2px solid var(--ink); outline-offset: 2px; }
+.clip-range-track input[type="range"]:disabled::-webkit-slider-thumb { background-color: var(--line-soft); cursor: wait; }
+.clip-range-track input[type="range"]:disabled::-moz-range-thumb { background-color: var(--line-soft); cursor: wait; }
+.clip-range-track.is-busy { cursor: wait; }
+.clip-range-labels { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin: 0 var(--handle, 18px); color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.clip-range-labels output { margin-left: 4px; color: var(--ink); font-weight: 650; }
+.clip-range-labels > span:last-child { text-align: right; }
+.clip-length { color: var(--ink); font-size: 13px; }
+.clip-busy { display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.clip-busy progress { width: min(260px, 40vw); height: 8px; accent-color: var(--signal); }
 
 .progress-track { overflow: hidden; height: 10px; margin: 18px 0; border: 1px solid var(--line); background: var(--surface); }
 .progress-bar { width: 0; height: 100%; background: var(--ink); transition: width .2s; }
@@ -481,10 +565,18 @@ input, select { color: var(--ink); background: var(--surface); }
   .attach-row { align-items: flex-start; flex-direction: column; }
   .media-grid { grid-template-columns: 1fr; }
   .settings-card { margin: 28px 14px; padding: 24px; }
-  .clip-card { padding: 20px; }
-  .clip-playback { align-items: flex-start; flex-direction: column; }
   .clip-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .clip-actions button { width: 100%; }
+  .studio-dialog { width: 100vw; height: 100dvh; margin: 0; }
+  .studio { border: 0; }
+  .studio-head { padding-left: 14px; }
+  .studio-toolbar { padding: 8px 10px; }
+  .studio-stage { padding: 14px; }
+  .studio-toolbar .tool > span, .clip-transport-actions .tool > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+  .studio-toolbar .tool, .clip-transport-actions .tool { padding: 6px 9px; }
+  .clip-timeline { padding: 10px 12px; }
+  .studio-foot { align-items: stretch; flex-direction: column; gap: 10px; padding: 12px 14px; }
+  .studio-actions button { flex: 1; }
   .onboarding-art { height: 220px; }
   .onboarding-copy { min-height: 160px; padding: 23px 22px 18px; }
   .onboarding-copy h2 { font-size: 29px; }

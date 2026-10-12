@@ -25,6 +25,11 @@ export function storedEnabledPlatforms(stored = {}) {
 
 export function inlineActionsEnabled(value) { return value !== false; }
 
+// The video editor's cut: "precise" (the default) or "fast"; see
+// clipReencodes in video-editor.js.
+export const CLIP_CUT_KEY = "clipCut";
+export function normalizeClipCut(value) { return value === "fast" ? "fast" : "precise"; }
+
 export function normalizeDefaultDestinations(value) {
   const requested = Array.isArray(value) ? new Set(value) : new Set(["upscrolled"]);
   return NATIVE_DESTINATIONS.map(destination => destination.id).filter(id => requested.has(id));

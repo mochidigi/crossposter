@@ -6,6 +6,22 @@
   const externalLinks = (root, post) => [...(root?.querySelectorAll?.("a[href^='https://t.co/']") || [])]
     .filter(anchor => { const wrapper = anchor.parentElement?.closest?.("[role='link']"); return !wrapper || wrapper === post || !post?.contains?.(wrapper); });
   const displayText = anchor => String(anchor.innerText ?? anchor.textContent ?? "").replace(/\s+/g, "").replace(/^https?:\/\//, "");
+  // tweetText keeps the author's line breaks as literal "\n" in its text nodes
+  // (white-space: pre-wrap) and wraps each @mention, #hashtag and $cashtag in
+  // an inline-flex box around a block span, which innerText breaks the line
+  // around (Firefox, 2026-10-12). Read the nodes instead: emoji images give
+  // their alt text, and a link labelled with a display URL (a t.co link, or a
+  // pasted x.com URL with hidden scheme and tail spans) gives its href.
+  const labelIsUrl = anchor => String(anchor.href || "").startsWith("https://t.co/") || Boolean(anchor.querySelector?.("[aria-hidden='true']"));
+  const postText = node => [...(node?.childNodes || [])].map(child => {
+    if (child.nodeType === 3) return child.data;
+    if (child.nodeType !== 1) return "";
+    const tag = String(child.tagName || "").toUpperCase();
+    if (tag === "IMG") return child.getAttribute("alt") || "";
+    if (tag === "BR") return "\n";
+    if (tag === "A" && labelIsUrl(child)) return child.href;
+    return postText(child);
+  }).join("");
   // X renders the home timeline behind its compose dialog, and the timeline's
   // inline composer carries the same test id and comes first in the page. Take
   // the dialog's editor when there is one; on the /compose/post route (where
@@ -41,13 +57,14 @@
       return { container, template: items.at(-1) };
     },
     // X renders every external link as a t.co anchor whose visible label is a
-    // truncated display URL, so the text keeps the href instead. Link cards
-    // sit outside tweetText; captureLinks reports them (with any inline links)
-    // and the draft appends the ones the text does not already carry. The
-    // background expands t.co through X's syndication endpoint afterwards.
-    captureText: ({ post, helpers }) => {
+    // truncated display URL, so the text keeps the href instead (see
+    // postText). Link cards sit outside tweetText; captureLinks reports them
+    // (with any inline links) and the draft appends the ones the text does not
+    // already carry. The background expands t.co through X's syndication
+    // endpoint afterwards.
+    captureText: ({ post }) => {
       const text = post.querySelector("[data-testid='tweetText']");
-      return text ? helpers.textWithLinkUrls(text, externalLinks(text, post)) : "";
+      return text ? postText(text).trim() : "";
     },
     captureLinks: ({ post }) => {
       const text = post.querySelector("[data-testid='tweetText']");
@@ -66,7 +83,10 @@
       }
       return [...links.values()];
     },
-    captureMedia: ({ post, helpers }) => helpers.mediaFromNodes(post.querySelectorAll("[data-testid='tweetPhoto'] img, [data-testid='videoComponent'] video")),
+    // Until a video's player initializes, X shows its poster as an <img>
+    // inside the player (and inside tweetPhoto); that is the video, not a photo.
+    captureMedia: ({ post, helpers }) => helpers.mediaFromNodes([...post.querySelectorAll("[data-testid='tweetPhoto'] img, [data-testid='videoComponent'] video")]
+      .filter(node => node.tagName === "VIDEO" || !node.closest("[data-testid='videoComponent'], [data-testid='videoPlayer']"))),
     sourceUrl: ({ post }) => {
       // Ad tweets have no timestamp permalink; their only status anchor is the
       // /analytics link, so accept any status href and trim it to the canonical URL.
@@ -115,8 +135,19 @@
           report("open");
           launch.click();
         }
-        try { field = await helpers.waitForElement(() => composerField(helpers), 20000); }
-        catch { return helpers.composerNotFound("Open X’s post composer, then use the Crossposter sidebar."); }
+        // Chrome leaves X's compose dialog empty in a hidden tab; give up sooner
+        // there so the background can show the tab and ask again.
+        const startedHidden = document.hidden, waitMs = startedHidden ? 8000 : 20000, started = Date.now();
+        try { field = await helpers.waitForElement(() => composerField(helpers), waitMs); }
+        catch {
+          // What the page looked like when the wait ran out (counts only).
+          const dialogs = [...document.querySelectorAll("[role='dialog']")];
+          return { ...helpers.composerNotFound("Open X’s post composer, then use the Crossposter sidebar."), locate: {
+            startedHidden, hidden: document.hidden, composeRoute: onComposeRoute(), waitedMs: Date.now() - started,
+            dialogs: dialogs.length, dialogEditors: dialogs.filter(dialog => dialog.querySelector(INLINE_FIELD)).length,
+            editors: document.querySelectorAll(INLINE_FIELD).length
+          } };
+        }
       }
       report("fill-text");
       // X's composer is Draft.js. execCommand("insertText") mutates the DOM

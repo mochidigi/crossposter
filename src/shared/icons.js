@@ -8,6 +8,7 @@ const ICONS = Object.freeze({
   "arrow-up-right": '<path d="M7 17 17 7M8 7h9v9"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   play: '<path d="m8 5 11 7-11 7V5Z" fill="currentColor" stroke="none"/>',
+  pen: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>',
   scissors: '<circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.7 8.3 10.3 5.2M8.7 15.7 19 10.5"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3m3 0-1 14H7L6 7M10 11v6M14 11v6"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/>',

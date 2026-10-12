@@ -42,10 +42,10 @@ const RETRYABLE = new Set(["failed", "signed-out", "manual", "partial"]);
 
 function networkState(handoff, { id }, entry, posted, copyFrom) {
   if (posted) return { state: "posted", tone: "done", text: "Posted", detail: "" };
-  if (handoff.retrying === id) {
-    const stage = handoff.composerProgress?.network === id ? handoffStageText(handoff.composerProgress.stage) : "";
-    return { state: "working", tone: "progress", text: stage || "Reloading the composer…", detail: "" };
-  }
+  // Destinations fill at the same time; each one still filling has its own
+  // stage in handoff.progress.
+  const stage = handoff.progress?.[id] ? handoffStageText(handoff.progress[id]) : "";
+  if (handoff.retrying === id) return { state: "working", tone: "progress", text: stage || "Reloading the composer…", detail: "" };
   if (entry) {
     const result = entry.result || {};
     const error = entry.error || result.error || "";
@@ -62,10 +62,7 @@ function networkState(handoff, { id }, entry, posted, copyFrom) {
     return { state: "manual", tone: "action", text: "Add the post", detail: `Composer is open. Add the post ${copyFrom}.` };
   }
   if (handoff.state === "error") return { state: "failed", tone: "error", text: "Not opened", detail: "" };
-  if (handoff.state === "filling" && handoff.currentNetwork === id) {
-    const stage = handoff.composerProgress?.network === id ? handoffStageText(handoff.composerProgress.stage) : "";
-    return { state: "working", tone: "progress", text: stage || "Opening the composer…", detail: "" };
-  }
+  if (handoff.state === "filling" && handoff.progress?.[id]) return { state: "working", tone: "progress", text: stage || "Opening the composer…", detail: "" };
   if (handoff.state === "preparing" || handoff.state === "filling") return { state: "waiting", tone: "progress", text: "Waiting…", detail: "" };
   return { state: "failed", tone: "error", text: "Not opened", detail: "" };
 }

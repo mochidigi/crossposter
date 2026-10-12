@@ -27,24 +27,40 @@ export function registerSourceNetwork(network) {
   else sourceNetworks.push(network);
 }
 
-// Leads with the original poster ("Name on X: text") so the credit is
-// visible before any truncation or "see more" fold. Drafts written by the
-// earlier build carried the credit as a trailing "(via Name on X)"; those are
-// still recognized so a reloaded draft is never credited twice.
-export function addAttribution(text, sourceAuthor, sourceNetwork, maxLength = 3000, sourceIsOwn = false) {
-  const body = String(text || "").trim();
+const MAX_TEXT_LENGTH = 3000;
+
+function creditParts(sourceAuthor, sourceNetwork) {
   const author = String(sourceAuthor || "").replace(/\s+/g, " ").trim();
-  if (!body || !author) return body.slice(0, maxLength);
+  if (!author) return null;
   const platform = PLATFORM_LABELS[sourceNetwork] || sourceNetworks.find(network => network.id === sourceNetwork)?.label || PLATFORM_LABELS.web;
-  const prefix = `${author} on ${platform}: `;
-  const legacySuffix = `(via ${author} on ${platform})`;
-  const bare = body.startsWith(prefix) ? body.slice(prefix.length).trimStart()
-    : body.endsWith(legacySuffix) ? body.slice(0, -legacySuffix.length).trimEnd()
-    : body;
-  if (sourceIsOwn) return bare.slice(0, maxLength);
-  if (body.startsWith(prefix) || body.endsWith(legacySuffix)) return body.slice(0, maxLength);
-  const available = Math.max(0, maxLength - prefix.length);
-  return `${prefix}${bare.slice(0, available).trimEnd()}`.trim();
+  return { prefix: `${author} on ${platform}: `, legacySuffix: `(via ${author} on ${platform})` };
+}
+
+// The credit leads the post on every destination ("Name on X: text") so it is
+// visible before any truncation or "see more" fold. It is not part of the
+// draft's editable text: Compose shows it beside the field with a toggle
+// (`draft.credit`), and postText adds it at handoff. Empty for an own post or
+// a post without a known author.
+export function creditPrefix(draft = {}) {
+  if (draft.sourceIsOwn === true) return "";
+  return creditParts(draft.sourceAuthor, draft.sourceNetwork)?.prefix || "";
+}
+
+// The text each destination receives; a post without text gets no credit.
+export function postText(draft = {}) {
+  const body = String(draft.text || "").trim();
+  return draft.credit === false || !body ? body : `${creditPrefix(draft)}${body}`;
+}
+
+// Drafts saved by earlier builds carry the credit inside their text, leading
+// or as a trailing "(via Name on X)"; take it out so it is never added twice.
+export function stripAttribution(text, sourceAuthor, sourceNetwork) {
+  const body = String(text || "").trim();
+  const parts = creditParts(sourceAuthor, sourceNetwork);
+  if (!parts) return body;
+  if (body.startsWith(parts.prefix)) return body.slice(parts.prefix.length).trimStart();
+  if (body.endsWith(parts.legacySuffix)) return body.slice(0, -parts.legacySuffix.length).trimEnd();
+  return body;
 }
 
 // Links a capture found on the post: inline links already sit in the text
@@ -85,10 +101,11 @@ export function createDraft(input = {}) {
   const sourceNetwork = input.sourceNetwork || detectNetwork(sourceUrl);
   const sourceAuthor = String(input.sourceAuthor || "").replace(/\s+/g, " ").trim();
   const sourceIsOwn = input.sourceIsOwn === true;
-  const { text, links } = placeLinksInText(input.text, normalizeCapturedLinks(input.links));
+  const { text, links } = placeLinksInText(stripAttribution(input.text, sourceAuthor, sourceNetwork), normalizeCapturedLinks(input.links));
   return {
     id: input.id || crypto.randomUUID(),
-    text: addAttribution(text, sourceAuthor, sourceNetwork, 3000, sourceIsOwn),
+    text: text.slice(0, MAX_TEXT_LENGTH),
+    credit: input.credit !== false,
     sourceUrl,
     sourceNetwork,
     sourceAuthor,
@@ -123,7 +140,8 @@ export function validateDraft(draft) {
   const errors = [];
   if (!draft.text && !draft.media.length) errors.push("Add text or media before posting.");
   if (!draft.destinations.length) errors.push("Choose at least one destination.");
-  if (draft.text.length > 3000) errors.push("Text must be 3,000 characters or fewer.");
+  const text = postText(draft), credited = text !== String(draft.text || "").trim();
+  if (text.length > MAX_TEXT_LENGTH) errors.push(credited ? "Text and credit must be 3,000 characters or fewer." : "Text must be 3,000 characters or fewer.");
   if (draft.media.length > 4) errors.push("A maximum of four media items is supported.");
   return errors;
 }

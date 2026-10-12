@@ -40,7 +40,16 @@ export function videoCropFromNormalized(width, height, rect) {
   return { width: cropWidth, height: cropHeight, x, y };
 }
 
-export function trimCommand(range, crop = null) {
+// A stream copy can only begin at a keyframe, so a copied clip whose start
+// moved begins at the keyframe before it (X's are 3 s apart). That is the
+// Fast cut: instant and lossless. A Precise cut (`exact`) re-encodes when the
+// start moved, at about the clip's own length in time. A crop always
+// re-encodes; a clip that keeps the start is exact either way.
+export function clipReencodes(range, crop = null, { exact = false } = {}) {
+  return Boolean(crop) || (exact && range.start > 0);
+}
+
+export function trimCommand(range, crop = null, { exact = false } = {}) {
   const command = [
     "-ss", range.start.toFixed(3),
     "-i", "input.mp4",
@@ -48,7 +57,13 @@ export function trimCommand(range, crop = null) {
     "-map", "0:v?",
     "-map", "0:a?"
   ];
-  if (crop) command.push("-vf", crop.x == null ? cropFilter(crop.width, crop.height, crop.aspect) : cropFilter(crop), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy");
+  if (crop) command.push("-vf", crop.x == null ? cropFilter(crop.width, crop.height, crop.aspect) : cropFilter(crop));
+  // A re-encoded video starts exactly at the trim point. Copied audio would
+  // start at the keyframe before it instead, and -avoid_negative_ts then
+  // delays the video behind an edit list that browsers ignore, so the audio
+  // ran about a second early (an X clip, 2026-10-12). Re-encoding the audio
+  // trims it at the same point.
+  if (clipReencodes(range, crop, { exact })) command.push("-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-b:a", "128k");
   else command.push("-c", "copy");
   command.push(
     "-avoid_negative_ts", "make_zero",
@@ -98,7 +113,7 @@ export async function trimVideo(input, range, {
     onProgress(0.1);
     await ffmpeg.writeFile("input.mp4", new Uint8Array(await blob.arrayBuffer()));
     onProgress(0.15);
-    let exitCode = await ffmpeg.exec(trimCommand(normalized, range.crop));
+    let exitCode = await ffmpeg.exec(trimCommand(normalized, range.crop, { exact: range.exact === true }));
     if (exitCode !== 0) {
       // Facebook commonly supplies AV1 video and HE-AAC audio as separate DASH
       // tracks. They mux cleanly for sharing, but stream-copy seeking or copied

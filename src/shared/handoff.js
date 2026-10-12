@@ -12,6 +12,22 @@ export function handoffMediaType(blobType, kind) {
   return kind === "video" ? "video/mp4" : "image/jpeg";
 }
 
+// One tab at a time can be in front while a handoff fills. Destinations that
+// fill in front (LinkedIn), and background fills whose site did not build its
+// composer while hidden, take turns through this queue. `onIdle` runs once no
+// turn is waiting, to bring Compose back; `idle()` resolves after it.
+export function foregroundQueue(onIdle = async () => {}) {
+  let tail = Promise.resolve(), pending = 0;
+  const run = job => {
+    pending++;
+    const result = tail.then(() => job());
+    tail = result.catch(() => {}).then(async () => { if (--pending === 0) await onIdle(); }).catch(() => {});
+    return result;
+  };
+  run.idle = () => tail;
+  return run;
+}
+
 export function shouldRetryCanonicalComposer(network, result) {
   return network === "x" && result?.composerOpened === false;
 }
@@ -34,6 +50,7 @@ export function selectComposerFrame(frames = []) {
 // the same vocabulary. The status rows show these beside the network's name,
 // so they don't repeat it.
 export const HANDOFF_STAGES = Object.freeze({
+  window: "Waiting for the browser window…",
   locate: "Finding the composer…",
   open: "Opening the composer…",
   inspect: "Checking for a draft…",

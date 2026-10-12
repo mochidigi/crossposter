@@ -364,6 +364,18 @@
   async function openNativeComposer(network, handoff) {
     const adapter = adapterById(network);
     if (!adapter?.openComposer) throw new Error("This native composer is not supported.");
+    // A tab brought to the front is still hidden while its window is
+    // minimized, and some sites (X in Chrome) build no composer then. Wait for
+    // the window to come back rather than fail (up to 10 minutes).
+    if (handoff.inFront && document.hidden) {
+      reportComposerStage(handoff.handoffId, network, "window");
+      await new Promise(resolve => {
+        const finish = () => { document.removeEventListener("visibilitychange", check); clearTimeout(timer); resolve(); };
+        const check = () => { if (!document.hidden) finish(); };
+        const timer = setTimeout(finish, 10 * 60 * 1000);
+        document.addEventListener("visibilitychange", check);
+      });
+    }
     const files = await handoffFiles(handoff.media || []);
     return adapter.openComposer({ handoff, files, helpers });
   }

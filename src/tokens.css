@@ -25,7 +25,8 @@
   --scrim: rgb(17 17 17 / 68%);
   --shadow: rgb(17 17 17 / 28%);
   --media-bg: #111;
-  --stage-bg: #252525;
+  /* The logo's dot: marks what the media editors will keep. */
+  --signal: #ef3f78;
   /* Network logos are drawn for a light background in both themes. */
   --network-tile: #fff;
 }

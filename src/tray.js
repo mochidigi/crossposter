@@ -18,6 +18,7 @@ const panelWindowId = (await ext.windows.getCurrent().catch(() => null))?.id;
 let currentText = "", files = [], objectUrls = [];
 let renderGeneration = 0, mediaCacheKey = "";
 let sessions = [], selectedSessionId = "";
+let hadSessions = false;
 const mediaCache = new Map();
 
 ext.runtime.onMessage.addListener(message => {
@@ -55,6 +56,13 @@ textCard.addEventListener("dragstart", event => {
 
 async function renderSessions(payload = {}) {
   sessions = Array.isArray(payload.sessions) ? payload.sessions.filter(session => !Number.isInteger(panelWindowId) || session.windowId === panelWindowId) : [];
+  // Once this window's last crosspost is gone (its tab group closed, or
+  // closed here), the sidebar has nothing left to show, so it closes itself.
+  // Firefox's sidebarAction.close() needs a user gesture; closing the
+  // sidebar's own page does not (2026-10-12). A sidebar opened while no
+  // crosspost is running stays open.
+  if (hadSessions && !sessions.length) { window.close(); return; }
+  hadSessions = sessions.length > 0;
   const activeId = sessions.some(session => session.id === payload.activeSessionId) ? payload.activeSessionId : "";
   if (activeId) selectedSessionId = activeId;
   else if (!sessions.some(session => session.id === selectedSessionId)) selectedSessionId = sessions.at(-1)?.id || "";

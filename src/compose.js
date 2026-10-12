@@ -1,8 +1,8 @@
 import { ext } from "./shared/browser.js";
 import { setHtml } from "./shared/dom.js";
-import { createDraft, validateDraft } from "./shared/draft.js";
+import { createDraft, creditPrefix, postText, validateDraft } from "./shared/draft.js";
 import { canCommitClip, MIN_CLIP_SECONDS, normalizeTrimRange, trimVideo, videoCropFromNormalized } from "./shared/video-editor.js";
-import { canvasBlob } from "./shared/image-editor.js";
+import { canvasBlob, imageEditorShortcut, MARKUP_COLORS } from "./shared/image-editor.js";
 import { icon } from "./shared/icons.js";
 import { handoffFilename, handoffMediaType } from "./shared/handoff.js";
 import { muxMp4Tracks } from "./shared/hls.js";
@@ -11,7 +11,7 @@ import { deleteHandoffMedia, getHandoffMedia, storeHandoffMedia } from "./shared
 import { DRAFT_HISTORY_KEY, draftHistoryEntry, expireDraftHistory, removeDraftHistoryEntry, upsertDraftHistory } from "./shared/draft-history.js";
 import { continueLabel, NATIVE_DESTINATIONS, nativeDestinationBlocker, selectedNativeDestinations } from "./shared/destinations.js";
 import { handoffNetworkStatuses, handoffStatusRow, handoffSummary } from "./shared/handoff-status.js";
-import { DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinations, inlineActionsEnabled, KNOWN_PLATFORMS_KEY, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY, storedEnabledPlatforms } from "./shared/preferences.js";
+import { CLIP_CUT_KEY, DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinations, inlineActionsEnabled, KNOWN_PLATFORMS_KEY, normalizeClipCut, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY, storedEnabledPlatforms } from "./shared/preferences.js";
 import { isFreshComposerUrl } from "./shared/compose-mode.js";
 import { CROSSPOST_SESSIONS_KEY, crosspostSessionIdFromUrl } from "./shared/crosspost-sessions.js";
 import { settleVideoResolution } from "./shared/video-resolution-state.js";
@@ -55,7 +55,7 @@ const moduleStartAt = performance.now();
 // background event page (a visible cost on Firefox). Messaging stays as the
 // fallback for snapshots that have not landed yet.
 const [stored, directSessions] = await Promise.all([
-  ext.storage.local.get(["pendingDraft", DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, KNOWN_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY]),
+  ext.storage.local.get(["pendingDraft", DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, KNOWN_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY, CLIP_CUT_KEY]),
   sessionId && ext.storage.session?.get ? ext.storage.session.get(CROSSPOST_SESSIONS_KEY).catch(() => null) : null
 ]);
 let crosspostSession = directSessions?.[CROSSPOST_SESSIONS_KEY]?.find(candidate => candidate?.id === sessionId) || null;
@@ -75,6 +75,7 @@ ext.runtime.sendMessage({ type: "SWEEP_STORED_DATA" }).catch(() => {});
 let defaultDestinations = normalizeDefaultDestinations(stored[DEFAULT_DESTINATIONS_KEY]);
 let enabledPlatforms = storedEnabledPlatforms(stored);
 let showInlineActions = inlineActionsEnabled(stored[SHOW_INLINE_ACTIONS_KEY]);
+let clipCut = normalizeClipCut(stored[CLIP_CUT_KEY]);
 const text = document.querySelector("#postText"), destinations = document.querySelector("#destinations");
 const settingsDialog = document.querySelector("#settingsDialog"), settingsDestinations = document.querySelector("#settingsDestinations");
 const settingsInlineActions = document.querySelector("#settingsInlineActions"), settingsError = document.querySelector("#settingsError");
@@ -86,10 +87,16 @@ const clipStartLabel = document.querySelector("#clipStartLabel"), clipEndLabel =
 const clipRangeTrack = document.querySelector("#clipRangeTrack");
 const clipSelection = document.querySelector("#clipSelection"), clipProgress = document.querySelector("#clipProgress");
 const clipError = document.querySelector("#clipError"), clipApply = document.querySelector("#clipApply");
-const clipCrop = document.querySelector("#clipCrop"), clipStage = document.querySelector("#clipStage");
-const clipCropOverlay = document.querySelector("#clipCropOverlay"), clipCropBox = document.querySelector("#clipCropBox"), clipCropHelp = document.querySelector("#clipCropHelp");
-const imageDialog = document.querySelector("#imageDialog"), imageCanvas = document.querySelector("#imageCanvas");
-const imageCropControls = document.querySelector("#imageCropControls"), imageColor = document.querySelector("#imageColor"), imageError = document.querySelector("#imageError");
+const clipStage = document.querySelector("#clipStage"), clipFrame = document.querySelector("#clipFrame");
+const clipCropOverlay = document.querySelector("#clipCropOverlay"), clipCropBox = document.querySelector("#clipCropBox");
+const clipPlay = document.querySelector("#clipPlay"), clipTime = document.querySelector("#clipTime"), clipDuration = document.querySelector("#clipDuration");
+const clipFilmstrip = document.querySelector("#clipFilmstrip"), clipMeta = document.querySelector("#clipMeta"), clipHint = document.querySelector("#clipHint");
+const clipBusy = document.querySelector("#clipBusy"), clipProgressLabel = document.querySelector("#clipProgressLabel");
+const imageDialog = document.querySelector("#imageDialog"), imageCanvas = document.querySelector("#imageCanvas"), imageStage = document.querySelector("#imageStage");
+const imageCropControls = document.querySelector("#imageCropControls"), imageMarkupOptions = document.querySelector("#imageMarkupOptions");
+const imageCropActions = document.querySelector("#imageCropActions"), imageEditActions = document.querySelector("#imageEditActions");
+const imageColor = document.querySelector("#imageColor"), imageSwatches = document.querySelector("#imageSwatches"), imageDelete = document.querySelector("#imageDelete");
+const imageError = document.querySelector("#imageError"), imageHint = document.querySelector("#imageHint"), imageMeta = document.querySelector("#imageMeta"), imageApply = document.querySelector("#imageApply");
 const composeMain = document.querySelector("main"), composeTopbar = document.querySelector(".topbar");
 const handoffOverlay = document.querySelector("#handoffOverlay"), handoffCancel = document.querySelector("#handoffCancel"), handoffCancelError = document.querySelector("#handoffCancelError");
 const handoffTitle = document.querySelector("#handoffOverlayTitle"), handoffLead = document.querySelector("#handoffOverlayLead"), handoffStatus = document.querySelector("#handoffStatus");
@@ -98,7 +105,9 @@ const permissionDialog = document.querySelector("#permissionDialog"), permission
 const permissionAllow = document.querySelector("#permissionAllow"), permissionCancel = document.querySelector("#permissionCancel"), permissionError = document.querySelector("#permissionError");
 let clipState = null;
 let clipCropGesture = null;
+let clipScrubPointer = null;
 let imageState = null;
+let imageOpenAttempt = 0;
 let clipOperationActive = false;
 let publishBusy = false;
 let publishGeneration = 0;
@@ -137,6 +146,7 @@ renderComposerMode();
 if (addLink) addLink.onclick = () => { if (draft.sourceUrl && !text.value.includes(draft.sourceUrl)) { text.value = `${text.value.trim()}\n\n${draft.sourceUrl}`.trim(); text.dispatchEvent(new Event("input")); } };
 
 text.addEventListener("input", () => { draft.text = text.value; renderMeta(); });
+document.querySelector("#creditToggle").onclick = () => { draft.credit = draft.credit === false; renderMeta(); };
 document.querySelector("#settingsOpen").onclick = openSettings;
 document.querySelector("#settingsVersion").textContent = `v${ext.runtime.getManifest().version}`;
 document.querySelector("#settingsClose").onclick = closeSettings;
@@ -158,51 +168,62 @@ document.querySelector("#file").onchange = event => {
 };
 document.querySelector("#clipClose").onclick = closeClipper;
 document.querySelector("#clipCancel").onclick = closeClipper;
-document.querySelector("#clipPlay").onclick = playClipSelection;
+clipPlay.onclick = toggleClipPlayback;
+clipPreview.onclick = toggleClipPlayback;
 document.querySelector("#clipMarkStart").onclick = () => markClipBoundary("start");
 document.querySelector("#clipMarkEnd").onclick = () => markClipBoundary("end");
 clipStart.oninput = () => updateClipRange("start", true);
 clipEnd.oninput = () => updateClipRange("end", true);
 clipApply.onclick = applyClip;
-clipCrop.onchange = updateClipCropSelection;
+document.querySelectorAll("[data-clip-crop]").forEach(button => button.onclick = () => selectClipCrop(button));
 clipPreview.onloadedmetadata = initializeClipRange;
 clipPreview.ontimeupdate = () => {
   if (clipState?.playing && clipPreview.currentTime >= Number(clipEnd.value)) {
     clipPreview.pause(); clipPreview.currentTime = Number(clipStart.value); clipState.playing = false;
   }
+  updateClipPlayhead();
 };
+clipPreview.onseeked = () => updateClipPlayhead();
+clipPreview.onplay = () => { setClipPlaying(true); followClipPlayhead(); };
+clipPreview.onpause = () => setClipPlaying(false);
 clipPreview.onerror = () => { if (clipState) clipError.textContent = "The video preview could not be loaded."; };
+clipRangeTrack.onpointerdown = beginClipScrub;
+clipRangeTrack.onpointermove = moveClipScrub;
+clipRangeTrack.onpointerup = endClipScrub;
+clipRangeTrack.onpointercancel = endClipScrub;
 clipCropBox.onpointerdown = beginClipCropGesture;
 clipCropBox.onpointermove = moveClipCropGesture;
 clipCropBox.onpointerup = endClipCropGesture;
 clipCropBox.onpointercancel = endClipCropGesture;
 clipCropBox.onkeydown = nudgeClipCrop;
-window.addEventListener("resize", renderClipCrop);
+window.addEventListener("resize", () => { fitClipFrame(); paintClipFilmstrip(); });
 clipDialog.addEventListener("cancel", event => { event.preventDefault(); closeClipper(); });
+document.addEventListener("keydown", clipKeyDown);
 document.querySelector("#imageClose").onclick = closeImageEditor;
 document.querySelector("#imageCancel").onclick = closeImageEditor;
-document.querySelector("#imageApply").onclick = applyImageEdit;
+imageApply.onclick = applyImageEdit;
 document.querySelector("#imageUndo").onclick = () => imageState?.editor.undo();
 document.querySelector("#imageRedo").onclick = () => imageState?.editor.redo();
 document.querySelector("#imageRotate").onclick = () => imageState?.editor.rotate();
 document.querySelector("#imageCropCancel").onclick = cancelImageCrop;
-document.querySelector("#imageCropApply").onclick = () => {
-  imageState?.editor.applyCrop();
-};
+document.querySelector("#imageCropApply").onclick = applyImageCrop;
+imageDelete.onclick = () => imageState?.editor.deleteSelection();
 document.querySelectorAll("[data-image-crop]").forEach(button => button.onclick = () => beginImageCrop(button.dataset.imageCrop));
-imageColor.oninput = () => imageState?.editor.setColor(imageColor.value);
-document.querySelectorAll("[data-image-tool]").forEach(button => button.onclick = () => {
-  if (!imageState) return;
-  button.dataset.imageTool === "crop" ? beginImageCrop("free") : imageState.editor.setTool(button.dataset.imageTool);
-});
+for (const { color, label } of MARKUP_COLORS) {
+  const swatch = document.createElement("button");
+  Object.assign(swatch, { type: "button", className: "swatch", title: label });
+  swatch.dataset.imageColor = color; swatch.style.setProperty("--swatch", color);
+  swatch.setAttribute("aria-label", label); swatch.setAttribute("aria-pressed", "false");
+  swatch.onclick = () => setImageColor(color);
+  imageSwatches.append(swatch);
+}
+imageColor.oninput = () => setImageColor(imageColor.value);
+document.querySelectorAll("[data-image-tool]").forEach(button => button.onclick = () => selectImageTool(button.dataset.imageTool));
 imageDialog.addEventListener("cancel", event => {
   event.preventDefault();
   imageState?.editor.tool === "crop" ? cancelImageCrop() : closeImageEditor();
 });
-document.addEventListener("keydown", event => {
-  if (!imageDialog.open || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
-  event.preventDefault(); event.shiftKey ? imageState?.editor.redo() : imageState?.editor.undo();
-});
+document.addEventListener("keydown", imageKeyDown);
 document.querySelector("#publish").onclick = publish;
 handoffCancel.onclick = cancelNativeHandoff;
 handoffNew.onclick = startNewPost;
@@ -327,8 +348,21 @@ function openFeedback(kind, error = "", network = "") {
   openFeedbackOverlay({ kind, error, network, surface: "compose", sessionId })
     .catch(() => showToast("The feedback form could not be opened."));
 }
+// The credit is shown as the post's first line, outside the editable text:
+// postText puts it in front of the text every destination receives.
+function renderCredit() {
+  const prefix = creditPrefix(draft).trim(), on = draft.credit !== false;
+  const line = document.querySelector("#credit"), toggle = document.querySelector("#creditToggle");
+  line.hidden = !prefix;
+  line.classList.toggle("off", !on);
+  document.querySelector("#creditText").textContent = prefix;
+  toggle.setAttribute("aria-pressed", String(on));
+  toggle.title = on ? "Each platform’s post starts with this credit. Select to leave it out." : "The credit is left out. Select to start each platform’s post with it.";
+}
+
 function renderMeta() {
-  document.querySelector("#count").textContent = `${draft.text.length} / 3000`;
+  renderCredit();
+  document.querySelector("#count").textContent = `${postText(draft).length} / 3000`;
   const source = document.querySelector("#source");
   if (!draft.sourceUrl) { source.textContent = "Fresh post"; return; }
   // Name the network properly and link back to the original post.
@@ -507,7 +541,7 @@ function renderMedia() {
     const disabled = busyMedia || item.resolveError ? " disabled" : "";
     const edit = video
       ? `<button class="media-clip" data-clip="${index}" type="button"${disabled}>${icon("scissors")}Edit</button>`
-      : `<button class="media-clip" data-image-edit="${index}" type="button">Edit</button>`;
+      : `<button class="media-clip" data-image-edit="${index}" type="button">${icon("pen")}Edit</button>`;
     const download = video ? `<button class="media-download" data-download="${index}" type="button"${disabled}>${icon("download")}Download</button>` : "";
     const busy = busyMedia ? `<div class="media-busy" role="status" aria-live="polite"><span class="media-spinner" aria-hidden="true"></span><span>${item.resolving ? "Locating video…" : "Preparing video…"}</span></div>` : "";
     return `<figure${busyMedia ? ' class="is-preparing"' : ""}><${video ? "video controls preload=metadata" : "img"}${source}${poster}></${video ? "video" : "img"}>${busy}<button class="media-remove" data-remove="${index}" aria-label="Remove media">${icon("trash")}</button><div class="media-actions">${edit}${download}</div>${note}</figure>`;
@@ -566,10 +600,12 @@ async function openClipper(index) {
       return;
     }
   }
-  clipState = { index, total: 0, busy: false, playing: false, cancelled: false, cropRect: null };
-  clipError.textContent = ""; clipSelection.textContent = "Loading video…"; clipProgress.hidden = true; clipProgress.value = 0;
+  clipState = { index, total: 0, busy: false, playing: false, cancelled: false, cropRect: null, cropAspect: 0, cropLabel: "", frames: [] };
+  clipError.textContent = ""; clipSelection.textContent = "Loading video…"; clipMeta.textContent = ""; setClipProgress(null);
   clipStart.disabled = true; clipEnd.disabled = true; clipApply.disabled = true;
-  clipCrop.value = ""; resetClipCropSelection();
+  clipTime.value = formatTime(0); clipDuration.textContent = formatTime(0);
+  clipRangeTrack.style.setProperty("--clip-playhead", "0%");
+  setActiveClipCrop(""); resetClipCropSelection(); setClipPlaying(false); renderClipHint(); paintClipFilmstrip();
   clipPreview.src = item.url; clipPreview.load(); clipDialog.showModal();
 }
 
@@ -584,7 +620,94 @@ function initializeClipRange() {
   clipStart.max = String(total); clipEnd.max = String(total);
   clipStart.value = "0"; clipEnd.value = String(total);
   clipStart.disabled = false; clipEnd.disabled = false; clipApply.disabled = false;
-  updateClipRange();
+  clipDuration.textContent = formatTime(total);
+  clipMeta.textContent = clipPreview.videoWidth ? `${formatTime(total)}, ${clipPreview.videoWidth} × ${clipPreview.videoHeight}` : formatTime(total);
+  fitClipFrame(); updateClipRange(); updateClipPlayhead();
+  // A shape picked before the metadata arrived was fitted to a guessed frame.
+  if (clipState.cropAspect) updateClipCropSelection();
+  captureClipFilmstrip(clipPreview.currentSrc || clipPreview.src, clipState);
+}
+
+// The frame wraps exactly the visible picture, so crop coordinates measured
+// against it map straight onto the video's pixels.
+function fitClipFrame() {
+  if (!clipState || !clipPreview.videoWidth || !clipPreview.videoHeight) { clipFrame.style.width = ""; clipFrame.style.height = ""; return; }
+  const available = innerSize(clipStage), aspect = clipPreview.videoWidth / clipPreview.videoHeight;
+  let width = available.width, height = width / aspect;
+  if (height > available.height) { height = available.height; width = height * aspect; }
+  clipFrame.style.width = `${Math.max(1, Math.floor(width))}px`; clipFrame.style.height = `${Math.max(1, Math.floor(height))}px`;
+  renderClipCrop();
+}
+
+function innerSize(element) {
+  const style = getComputedStyle(element);
+  return {
+    width: Math.max(1, element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+    height: Math.max(1, element.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom))
+  };
+}
+
+const FILMSTRIP_FRAMES = 12;
+// Fills the timeline with frames from a second, muted copy of the video so the
+// preview's playhead never jumps. The strip is only a visual aid: any failure
+// leaves the plain track.
+async function captureClipFilmstrip(url, state) {
+  const video = document.createElement("video");
+  // Metadata only: each seek then fetches just the ranges it needs, so a
+  // remote video is not downloaded in full for the strip.
+  Object.assign(video, { muted: true, preload: "metadata", playsInline: true, src: url });
+  try {
+    await mediaEvent(video, "loadeddata");
+    for (let frame = 0; frame < FILMSTRIP_FRAMES; frame++) {
+      if (state !== clipState || state.cancelled) return;
+      video.currentTime = Math.min(Math.max(0, video.duration - 0.05), (frame + 0.5) / FILMSTRIP_FRAMES * video.duration);
+      await mediaEvent(video, "seeked");
+      const canvas = document.createElement("canvas");
+      canvas.height = 96; canvas.width = Math.max(1, Math.round(96 * video.videoWidth / video.videoHeight)) || 170;
+      canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+      state.frames[frame] = canvas;
+      if (state === clipState) paintClipFilmstrip();
+    }
+  } catch {
+    // Keep whatever frames arrived.
+  } finally {
+    video.removeAttribute("src"); video.load();
+  }
+}
+
+function mediaEvent(element, type, timeout = 8000) {
+  return new Promise((resolve, reject) => {
+    const done = event => { clearTimeout(timer); element.removeEventListener(type, done); element.removeEventListener("error", done); event.type === type ? resolve() : reject(new Error("media error")); };
+    const timer = setTimeout(() => done({ type: "timeout" }), timeout);
+    element.addEventListener(type, done); element.addEventListener("error", done);
+  });
+}
+
+function paintClipFilmstrip() {
+  const ratio = window.devicePixelRatio || 1, width = clipFilmstrip.clientWidth, height = clipFilmstrip.clientHeight;
+  if (!width || !height) return;
+  clipFilmstrip.width = Math.round(width * ratio); clipFilmstrip.height = Math.round(height * ratio);
+  const context = clipFilmstrip.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0); context.clearRect(0, 0, width, height);
+  const frames = clipState?.frames || [], sample = frames.find(Boolean);
+  if (!sample) return;
+  const slots = Math.max(1, Math.ceil(width / (height * sample.width / sample.height))), slotWidth = width / slots;
+  for (let slot = 0; slot < slots; slot++) {
+    const wanted = Math.min(FILMSTRIP_FRAMES - 1, Math.floor((slot + 0.5) / slots * FILMSTRIP_FRAMES));
+    const frame = nearestFrame(frames, wanted);
+    if (!frame) continue;
+    // Cover the slot, cropping the frame's sides evenly.
+    const scale = Math.max(slotWidth / frame.width, height / frame.height), sourceWidth = slotWidth / scale, sourceHeight = height / scale;
+    context.drawImage(frame, (frame.width - sourceWidth) / 2, (frame.height - sourceHeight) / 2, sourceWidth, sourceHeight, slot * slotWidth, 0, Math.ceil(slotWidth) + 1, height);
+  }
+}
+
+function nearestFrame(frames, index) {
+  for (let distance = 0; distance < FILMSTRIP_FRAMES; distance++) {
+    if (frames[index - distance]) return frames[index - distance];
+    if (frames[index + distance]) return frames[index + distance];
+  }
+  return null;
 }
 
 function updateClipRange(changed = "", seek = false) {
@@ -594,19 +717,117 @@ function updateClipRange(changed = "", seek = false) {
   if (changed === "end" && end - start < MIN_CLIP_SECONDS) end = Math.min(clipState.total, start + MIN_CLIP_SECONDS);
   clipStart.value = String(start); clipEnd.value = String(end);
   clipStartLabel.value = formatTime(start); clipEndLabel.value = formatTime(end);
-  clipSelection.textContent = `${formatTime(end - start)} selected · ${formatTime(start)}–${formatTime(end)}`;
+  clipSelection.textContent = `${formatSeconds(end - start)} clip`;
   const startPercent = `${start / clipState.total * 100}%`, endPercent = `${end / clipState.total * 100}%`;
   clipRangeTrack.style.setProperty("--clip-start", startPercent);
   clipRangeTrack.style.setProperty("--clip-end", endPercent);
   clipRangeTrack.classList.toggle("start-on-top", start > clipState.total / 2);
   if (seek) clipPreview.currentTime = changed === "end" ? Math.max(start, end - 0.05) : start;
+  renderClipHint();
+}
+
+function updateClipPlayhead(time = clipPreview.currentTime) {
+  if (!clipState?.total) return;
+  const position = clamp(Number(time) || 0, 0, clipState.total);
+  clipRangeTrack.style.setProperty("--clip-playhead", `${position / clipState.total * 100}%`);
+  clipTime.value = formatTime(position);
+}
+
+function followClipPlayhead() {
+  if (!clipState || clipPreview.paused) return;
+  updateClipPlayhead();
+  requestAnimationFrame(followClipPlayhead);
+}
+
+function setClipPlaying(playing) {
+  clipPlay.classList.toggle("is-playing", playing);
+  clipPlay.setAttribute("aria-label", playing ? "Pause" : "Play selection");
+  clipPlay.title = playing ? "Pause (Space)" : "Play selection (Space)";
+}
+
+async function toggleClipPlayback() {
+  if (!clipState?.total || clipState.busy) return;
+  if (!clipPreview.paused) { clipPreview.pause(); clipState.playing = false; return; }
+  const start = Number(clipStart.value), end = Number(clipEnd.value);
+  if (clipPreview.currentTime < start || clipPreview.currentTime >= end - 0.05) clipPreview.currentTime = start;
+  clipState.playing = true;
+  try { await clipPreview.play(); } catch { clipState.playing = false; }
+}
+
+// Pressing or dragging on the filmstrip (not on a handle) moves the playhead.
+function beginClipScrub(event) {
+  if (!clipState?.total || clipState.busy || event.button > 0 || event.target instanceof HTMLInputElement) return;
+  clipScrubPointer = event.pointerId; clipRangeTrack.setPointerCapture(event.pointerId);
+  clipPreview.pause(); scrubClipTo(event); event.preventDefault();
+}
+function moveClipScrub(event) { if (event.pointerId === clipScrubPointer) scrubClipTo(event); }
+function endClipScrub(event) {
+  if (event.pointerId !== clipScrubPointer) return;
+  if (clipRangeTrack.hasPointerCapture(event.pointerId)) clipRangeTrack.releasePointerCapture(event.pointerId);
+  clipScrubPointer = null;
+}
+function scrubClipTo(event) {
+  const bounds = clipRangeTrack.getBoundingClientRect(), time = clamp((event.clientX - bounds.left) / bounds.width, 0, 1) * clipState.total;
+  clipPreview.currentTime = time; updateClipPlayhead(time);
+}
+
+function clipKeyDown(event) {
+  if (!clipDialog.open || !clipState?.total || clipState.busy || event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.defaultPrevented) return;
+  const target = event.target;
+  if (target?.matches?.("textarea, select, input:not([type=range])")) return;
+  if (event.key === " " && !target?.closest?.("button")) { event.preventDefault(); toggleClipPlayback(); return; }
+  const letter = /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() : (/^Key([A-Z])$/.exec(event.code || "")?.[1] || "").toLowerCase();
+  if (letter === "i" || letter === "o") { event.preventDefault(); markClipBoundary(letter === "i" ? "start" : "end"); }
+}
+
+function selectClipCrop(button) {
+  if (!clipState || clipState.busy) return;
+  setActiveClipCrop(button.dataset.clipCrop);
+  clipState.cropAspect = Number(button.dataset.clipCrop) || 0;
+  clipState.cropLabel = button.dataset.cropLabel || "";
+  updateClipCropSelection(); renderClipHint();
+}
+
+// The cut only matters when the start moved: a clip from 0:00 is copied and
+// exact either way, and a crop always re-encodes. The choice is remembered
+// for the next clip.
+function selectClipCut(value) {
+  if (!clipState || clipState.busy) return;
+  clipCut = normalizeClipCut(value);
+  ext.storage.local.set({ [CLIP_CUT_KEY]: clipCut }).catch(() => {});
+  renderClipHint();
+}
+
+function clipCutOffered() {
+  return Boolean(clipState?.total) && !clipState.cropAspect && Number(clipStart.value) > 0;
+}
+
+function setActiveClipCrop(value) {
+  document.querySelectorAll("[data-clip-crop]").forEach(button => {
+    const active = button.dataset.clipCrop === value;
+    button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+// Once the start moved (and nothing is cropped), the hint names the cut and
+// offers the other one as a quiet text link.
+function renderClipHint() {
+  if (clipState?.cropAspect) { clipHint.textContent = "Drag the frame to reposition it, or a corner to resize. Cropping re-encodes the video, which takes about as long as the clip."; return; }
+  if (!clipCutOffered()) { clipHint.textContent = "Drag the handles, or press I and O at the playhead, to set the start and end. Trimming keeps the original quality."; return; }
+  const fast = clipCut === "fast", other = document.createElement("button");
+  other.type = "button"; other.className = "hint-action";
+  other.textContent = fast ? "Use a precise cut" : "Use a fast cut";
+  other.onclick = () => { selectClipCut(fast ? "precise" : "fast"); clipHint.querySelector(".hint-action")?.focus(); };
+  clipHint.replaceChildren(fast
+    ? "Fast cut: instant, with the original quality, but starts at the keyframe before your start, often a second or more early. "
+    : "Precise cut: starts on the exact frame you chose, and takes about as long as the clip to make. ", other);
 }
 
 function updateClipCropSelection() {
   if (!clipState) return;
-  const aspect = Number(clipCrop.value);
+  const aspect = clipState.cropAspect;
   if (!aspect) { resetClipCropSelection(); return; }
-  const width = clipStage.clientWidth, height = clipStage.clientHeight;
+  const width = clipPreview.videoWidth || clipFrame.clientWidth, height = clipPreview.videoHeight || clipFrame.clientHeight;
   if (!width || !height) return;
   const frameAspect = width / height;
   let cropWidth = 1, cropHeight = 1;
@@ -617,24 +838,24 @@ function updateClipCropSelection() {
 }
 
 function renderClipCrop() {
-  if (!clipState?.cropRect || !Number(clipCrop.value)) {
-    clipCropOverlay.hidden = true; clipCropHelp.hidden = true; return;
+  if (!clipState?.cropRect || !clipState.cropAspect) {
+    clipCropOverlay.hidden = true; return;
   }
   const rect = clipState.cropRect;
   clipCropBox.style.left = `${rect.x * 100}%`; clipCropBox.style.top = `${rect.y * 100}%`;
   clipCropBox.style.width = `${rect.width * 100}%`; clipCropBox.style.height = `${rect.height * 100}%`;
-  clipCropOverlay.hidden = false; clipCropHelp.hidden = false;
+  clipCropOverlay.hidden = false;
 }
 
 function resetClipCropSelection() {
   clipCropGesture = null;
   if (clipState) clipState.cropRect = null;
-  clipCropOverlay.hidden = true; clipCropHelp.hidden = true;
+  clipCropOverlay.hidden = true;
 }
 
 function beginClipCropGesture(event) {
   if (!clipState?.cropRect || clipState.busy) return;
-  const bounds = clipStage.getBoundingClientRect(), rect = clipState.cropRect;
+  const bounds = clipFrame.getBoundingClientRect(), rect = clipState.cropRect;
   const handle = event.target.closest("[data-crop-handle]")?.dataset.cropHandle || "";
   clipCropGesture = {
     pointerId: event.pointerId, handle, startX: event.clientX, startY: event.clientY,
@@ -645,7 +866,7 @@ function beginClipCropGesture(event) {
 
 function moveClipCropGesture(event) {
   if (!clipCropGesture || event.pointerId !== clipCropGesture.pointerId || !clipState) return;
-  const bounds = clipStage.getBoundingClientRect(), start = clipCropGesture.rect;
+  const bounds = clipFrame.getBoundingClientRect(), start = clipCropGesture.rect;
   let next;
   if (!clipCropGesture.handle) {
     next = {
@@ -654,7 +875,7 @@ function moveClipCropGesture(event) {
       width: start.width, height: start.height
     };
   } else {
-    next = resizedClipCrop(start, clipCropGesture.handle, event.clientX - bounds.left, event.clientY - bounds.top, bounds.width, bounds.height, Number(clipCrop.value));
+    next = resizedClipCrop(start, clipCropGesture.handle, event.clientX - bounds.left, event.clientY - bounds.top, bounds.width, bounds.height, clipState.cropAspect);
   }
   setNormalizedClipCrop(next, bounds.width, bounds.height); event.preventDefault();
 }
@@ -686,7 +907,7 @@ function endClipCropGesture(event) {
 function nudgeClipCrop(event) {
   const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
   if (!direction || !clipState?.cropRect || clipState.busy) return;
-  const bounds = clipStage.getBoundingClientRect(), rect = clipState.cropRect;
+  const bounds = clipFrame.getBoundingClientRect(), rect = clipState.cropRect;
   const step = event.shiftKey ? 10 : 1;
   const next = {
     x: clamp(rect.x * bounds.width + direction[0] * step, 0, bounds.width - rect.width * bounds.width),
@@ -704,32 +925,27 @@ function markClipBoundary(boundary) {
   updateClipRange(boundary);
 }
 
-async function playClipSelection() {
-  if (!clipState?.total || clipState.busy) return;
-  clipPreview.currentTime = Number(clipStart.value); clipState.playing = true;
-  try { await clipPreview.play(); } catch { clipState.playing = false; }
-}
-
 async function applyClip() {
   if (!clipState?.total || clipState.busy) return;
   const state = clipState;
   let range;
   try { range = normalizeTrimRange(clipStart.value, clipEnd.value, state.total); }
   catch (error) { clipError.textContent = error.message; return; }
-  const cropAspect = Number(clipCrop.value) || 0;
+  const cropAspect = state.cropAspect || 0;
   const crop = cropAspect ? videoCropFromNormalized(clipPreview.videoWidth, clipPreview.videoHeight, state.cropRect) : null;
   if (cropAspect && !crop) { clipError.textContent = "The crop area could not be read from the video preview."; return; }
   if (range.start < 0.05 && state.total - range.end < 0.05 && !cropAspect) { closeClipper(); showToast("The full video is already selected."); return; }
-  setClipBusy(true); clipError.textContent = ""; clipProgress.hidden = false;
+  clipPreview.pause();
+  setClipBusy(true); clipError.textContent = ""; setClipProgress(0);
   clipOperationActive = true;
   try {
     const item = draft.media[state.index];
-    const blob = await trimVideo(item.url, { start: range.start, end: range.end, total: state.total, crop }, {
-      onProgress: value => { if (canCommitClip(state, clipState)) clipProgress.value = value; }
+    const blob = await trimVideo(item.url, { start: range.start, end: range.end, total: state.total, crop, exact: clipCut === "precise" }, {
+      onProgress: value => { if (canCommitClip(state, clipState)) setClipProgress(value); }
     });
     if (!canCommitClip(state, clipState)) return;
     const url = URL.createObjectURL(blob); objectUrls.push(url); releaseObjectUrl(item.url);
-    draft.media[state.index] = { ...withoutStoredReference(item), url, local: true, filename: `clip-${Date.now()}.mp4`, trim: range, crop: cropAspect ? clipCrop.selectedOptions[0].textContent : item.crop };
+    draft.media[state.index] = { ...withoutStoredReference(item), url, local: true, filename: `clip-${Date.now()}.mp4`, trim: range, crop: cropAspect ? state.cropLabel : item.crop };
     setClipBusy(false); renderMedia(); closeClipper(); showToast(`Clip ready · ${formatTime(range.duration)}`);
   } catch (error) {
     if (!canCommitClip(state, clipState)) return;
@@ -740,28 +956,51 @@ async function applyClip() {
   }
 }
 
+function setClipProgress(value) {
+  clipBusy.hidden = value == null; clipHint.hidden = value != null;
+  if (value == null) return;
+  clipProgress.value = value; clipProgressLabel.textContent = `Creating clip… ${Math.round(value * 100)}%`;
+}
+
 async function openImageEditor(index) {
   const item = draft.media[index];
-  if (!item || item.kind !== "image") return;
-  imageError.textContent = ""; setActiveImageCropPreset("free");
+  if (!item || item.kind !== "image" || imageDialog.open) return;
+  const attempt = ++imageOpenAttempt;
+  imageError.textContent = ""; imageMeta.textContent = ""; imageDelete.hidden = true; imageApply.disabled = true;
+  setActiveImageCropPreset("free"); setActiveImageTool("select"); imageHint.textContent = "Loading image…";
+  // The canvas can still hold the previously edited picture until this one loads.
+  imageStage.classList.add("is-loading");
+  imageDialog.showModal();
+  let sourceUrl = "";
   try {
     // Fabric.js is ~780 KB; import it only when the editor actually opens so
     // it stays out of the compose page's startup module graph.
-    const { DEFAULT_MARKUP_COLOR, FabricImageEditor } = await import("./shared/fabric-image-editor.js");
-    imageColor.value = DEFAULT_MARKUP_COLOR;
+    const { DEFAULT_MARKUP_COLOR, FabricImageEditor, markupColor } = await import("./shared/fabric-image-editor.js");
     const response = await fetch(item.url);
     if (!response.ok) throw new Error(`Could not load the image (${response.status}).`);
-    const blob = await response.blob(), sourceUrl = URL.createObjectURL(blob), image = await loadEditorImage(sourceUrl);
+    const blob = await response.blob();
+    sourceUrl = URL.createObjectURL(blob);
+    const image = await loadEditorImage(sourceUrl);
+    if (attempt !== imageOpenAttempt) { URL.revokeObjectURL(sourceUrl); return; }
     const editor = new FabricImageEditor(imageCanvas, {
       onToolChange: setActiveImageTool,
+      onSelection: objects => renderImageSelection(objects),
       onHistory: (position, length) => {
         document.querySelector("#imageUndo").disabled = position <= 0;
         document.querySelector("#imageRedo").disabled = position >= length - 1;
+        const size = editor.outputSize(); imageMeta.textContent = `${size.width} × ${size.height}`;
       }
     });
-    imageState = { index, editor, sourceUrl, type: blob.type };
-    await editor.load(image); setActiveImageTool("select"); imageDialog.showModal();
-  } catch (error) { showToast(error instanceof Error ? error.message : "The image could not be edited."); }
+    imageState = { index, editor, sourceUrl, type: blob.type, cropPreset: "free", markupColor };
+    const stage = innerSize(imageStage);
+    await editor.load(image, { maxWidth: stage.width, maxHeight: stage.height });
+    setImageColor(DEFAULT_MARKUP_COLOR); setActiveImageTool("select"); imageApply.disabled = false;
+    imageStage.classList.remove("is-loading");
+  } catch (error) {
+    if (attempt !== imageOpenAttempt) return;
+    if (sourceUrl && !imageState) URL.revokeObjectURL(sourceUrl);
+    closeImageEditor(); showToast(error instanceof Error ? error.message : "The image could not be edited.");
+  }
 }
 
 async function applyImageEdit() {
@@ -775,21 +1014,82 @@ async function applyImageEdit() {
   } catch (error) { imageError.textContent = error instanceof Error ? error.message : "The image could not be saved."; }
 }
 function closeImageEditor() {
+  imageOpenAttempt++;
   if (imageState) { imageState.editor.dispose(); URL.revokeObjectURL(imageState.sourceUrl); }
   imageState = null; imageError.textContent = "";
   if (imageDialog.open) imageDialog.close();
 }
-function setActiveImageTool(tool) {
-  document.querySelectorAll("[data-image-tool]").forEach(button => button.classList.toggle("active", button.dataset.imageTool === tool));
-  imageCropControls.hidden = tool !== "crop";
-}
-function beginImageCrop(preset) {
+const IMAGE_TOOL_HINTS = Object.freeze({
+  select: "Click an annotation to move, resize, or recolor it.",
+  highlight: "Drag across the image to highlight an area.",
+  rectangle: "Drag across the image to draw a box.",
+  arrow: "Drag from where the arrow starts to what it points at.",
+  text: "Click where the label goes, then type.",
+  crop: "Drag the frame or its corners. Enter applies the crop; Esc cancels it."
+});
+function selectImageTool(tool) {
   if (!imageState) return;
+  tool === "crop" ? beginImageCrop(imageState.cropPreset) : imageState.editor.setTool(tool);
+}
+function setActiveImageTool(tool) {
+  document.querySelectorAll("[data-image-tool]").forEach(button => {
+    const active = button.dataset.imageTool === tool;
+    button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active));
+  });
+  imageCropControls.hidden = tool !== "crop"; imageCropActions.hidden = tool !== "crop";
+  imageMarkupOptions.hidden = tool === "crop"; imageEditActions.hidden = tool === "crop";
+  if (tool !== "select") imageDelete.hidden = true;
+  imageHint.textContent = IMAGE_TOOL_HINTS[tool] || "";
+}
+function renderImageSelection(objects) {
+  imageDelete.hidden = !objects.length;
+  if (!imageState || imageState.editor.tool !== "select") return;
+  imageHint.textContent = objects.length ? "Drag to move it, pull a corner to resize, or pick a new color. Delete removes it." : IMAGE_TOOL_HINTS.select;
+  const color = objects.length === 1 ? imageState.markupColor(objects[0]) : "";
+  if (color) { imageState.editor.color = color; markImageColor(color); }
+}
+function setImageColor(color) {
+  if (!/^#[0-9a-f]{6}$/i.test(color)) return;
+  imageState?.editor.setColor(color);
+  markImageColor(color.toLowerCase());
+}
+function markImageColor(color) {
+  imageColor.value = color;
+  let preset = false;
+  imageSwatches.querySelectorAll("[data-image-color]").forEach(swatch => {
+    const active = swatch.dataset.imageColor === color;
+    preset ||= active;
+    swatch.classList.toggle("active", active); swatch.setAttribute("aria-pressed", String(active));
+  });
+  const custom = imageColor.closest(".swatch-custom");
+  custom.classList.toggle("active", !preset);
+  custom.style.setProperty("--swatch", preset ? "" : color);
+}
+function beginImageCrop(preset = "free") {
+  if (!imageState) return;
+  imageState.cropPreset = preset;
   setActiveImageCropPreset(preset); imageState.editor.beginCrop(preset);
 }
+function applyImageCrop() { imageState?.editor.applyCrop(); }
 function cancelImageCrop() { imageState?.editor.setTool("select"); }
 function setActiveImageCropPreset(preset) {
-  document.querySelectorAll("[data-image-crop]").forEach(button => button.classList.toggle("active", button.dataset.imageCrop === preset));
+  document.querySelectorAll("[data-image-crop]").forEach(button => {
+    const active = button.dataset.imageCrop === preset;
+    button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active));
+  });
+}
+function imageKeyDown(event) {
+  if (!imageDialog.open || !imageState || event.defaultPrevented) return;
+  const editor = imageState.editor, target = event.target;
+  if (target?.matches?.("textarea, select, [contenteditable='true'], input:not([type=color])") || editor.isEditingText()) return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault(); event.shiftKey ? editor.redo() : editor.undo(); return;
+  }
+  // Enter applies the crop, also right after picking a shape or tool; other
+  // buttons (Cancel crop, Close…) keep their own Enter.
+  if (event.key === "Enter" && editor.tool === "crop" && !target?.closest?.("button:not([data-image-crop], [data-image-tool])")) { event.preventDefault(); applyImageCrop(); return; }
+  const tool = event.repeat ? "" : imageEditorShortcut(event);
+  if (tool) { event.preventDefault(); selectImageTool(tool); }
 }
 function loadEditorImage(url) {
   return new Promise((resolve, reject) => {
@@ -800,10 +1100,12 @@ function loadEditorImage(url) {
 function setClipBusy(busy) {
   if (!clipState) return;
   clipState.busy = busy;
-  for (const element of [clipStart, clipEnd, clipCrop, document.querySelector("#clipPlay"), document.querySelector("#clipMarkStart"), document.querySelector("#clipMarkEnd"), clipApply]) element.disabled = busy;
+  for (const element of [clipStart, clipEnd, clipPlay, document.querySelector("#clipMarkStart"), document.querySelector("#clipMarkEnd"), clipApply, ...document.querySelectorAll("[data-clip-crop]")]) element.disabled = busy;
   clipCropBox.dataset.disabled = String(busy);
+  clipRangeTrack.classList.toggle("is-busy", busy);
   document.querySelector("#clipCancel").disabled = false;
   document.querySelector("#clipClose").disabled = false;
+  if (!busy) setClipProgress(null);
   setHtml(clipApply, busy ? `${icon("refresh")}Creating clip…` : `Use clip${icon("check")}`);
 }
 
@@ -812,7 +1114,7 @@ function closeClipper() {
   resetClipCropSelection();
   clipPreview.pause(); clipPreview.removeAttribute("src"); clipPreview.load();
   if (clipDialog.open) clipDialog.close();
-  clipState = null; clipError.textContent = ""; setHtml(clipApply, `Use clip${icon("check")}`);
+  clipState = null; clipError.textContent = ""; setClipProgress(null); setClipPlaying(false); setHtml(clipApply, `Use clip${icon("check")}`);
 }
 
 function releaseObjectUrl(url) {
@@ -824,6 +1126,11 @@ function releaseObjectUrl(url) {
 function formatTime(seconds) {
   const safe = Math.max(0, Number(seconds) || 0), minutes = Math.floor(safe / 60), remainder = (safe % 60).toFixed(1).padStart(4, "0");
   return `${minutes}:${remainder}`;
+}
+// A clip length for people: "6.2 s" or "1 min 4.5 s".
+function formatSeconds(seconds) {
+  const safe = Math.max(0, Number(seconds) || 0), minutes = Math.floor(safe / 60), remainder = (safe - minutes * 60).toFixed(1);
+  return minutes ? `${minutes} min ${remainder} s` : `${remainder} s`;
 }
 function clamp(value, minimum, maximum) { return Math.max(minimum, Math.min(value, maximum)); }
 function setHandoffActive(active) {
@@ -966,7 +1273,7 @@ async function publish() {
   await ext.storage.local.set({ pendingDraft: draft });
 }
 async function openNativeTray(networks, attemptId) {
-  const response = await ext.runtime.sendMessage({ type: "OPEN_NATIVE_TRAY", sessionId, attemptId, text: draft.text, networks });
+  const response = await ext.runtime.sendMessage({ type: "OPEN_NATIVE_TRAY", sessionId, attemptId, text: postText(draft), networks });
   if (!response?.ok) throw new Error(response?.error || "Could not open the Crossposter sidebar.");
   return response;
 }
@@ -1006,7 +1313,7 @@ async function startNativeHandoff(networks, attemptId) {
     }
   }
   await saveDraftHistory(preparedForHistory);
-  const response = await ext.runtime.sendMessage({ type: "OPEN_NATIVE_HANDOFF", sessionId, attemptId, networks, handoff: { text: draft.text, media: prepared, mediaErrors: failures } });
+  const response = await ext.runtime.sendMessage({ type: "OPEN_NATIVE_HANDOFF", sessionId, attemptId, networks, handoff: { text: postText(draft), media: prepared, mediaErrors: failures } });
   if (!response?.ok) throw new Error(response?.error || "Could not prepare the native composers.");
   if (failures.length) showToast(failures.join(" "));
   return {

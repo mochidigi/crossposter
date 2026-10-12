@@ -58,8 +58,12 @@
     return segments.join("/") || "/";
   }
 
+  // forEach rather than keys(): in a Firefox content script the iterator that
+  // keys() returns is not iterable (FormData and Headers likewise), and the
+  // TypeError ended collect() before its sign-in checks (2026-10-12).
   function queryNames(search = "") {
-    const names = [...new URLSearchParams(String(search)).keys()].map(name => cleanToken(name, 40));
+    const names = [];
+    new URLSearchParams(String(search)).forEach((value, name) => names.push(cleanToken(name, 40)));
     return [...new Set(names)].slice(0, 12);
   }
 

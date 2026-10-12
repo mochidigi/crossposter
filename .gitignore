@@ -7,3 +7,5 @@ node_modules/
 src/vendor/*
 !src/vendor/fabric/
 !src/vendor/fabric/**
+site/tools/.preview/
+site/tools/audio.wav
