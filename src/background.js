@@ -1303,7 +1303,7 @@ async function retryNativeHandoff(sessionId, network) {
   if (handoff.state !== "ready" || handoff.retrying) throw new Error("Wait for the crosspost to finish before retrying.");
   const attemptId = handoff.attemptId;
   const previous = (handoff.results || []).find(item => item.network === network);
-  const knownTabId = [previous?.tabId, handoff.destinationTabs?.[network]].find(Number.isInteger);
+  const knownTabId = (handoff.closedNetworks || []).includes(network) ? null : [previous?.tabId, handoff.destinationTabs?.[network]].find(Number.isInteger);
   // A destination that loads in front loads at its turn (fillNativeComposer).
   let tab = Number.isInteger(knownTabId)
     ? await (loadsInFront(target) ? ext.tabs.get(knownTabId) : ext.tabs.update(knownTabId, { url: target.homeUrl })).catch(() => null)
@@ -1313,7 +1313,8 @@ async function retryNativeHandoff(sessionId, network) {
     session.groupId = await groupComposerTabs(session.tabIds, session.groupId).catch(() => session.groupId);
   }
   session.handoff = { ...session.handoff, retrying: network, progress: { [network]: "locate" },
-    destinationTabs: { ...(session.handoff.destinationTabs || {}), [network]: tab.id } };
+    destinationTabs: { ...(session.handoff.destinationTabs || {}), [network]: tab.id },
+    closedNetworks: (session.handoff.closedNetworks || []).filter(id => id !== network) };
   session.updatedAt = Date.now(); await persistCrosspostSessions(); notifyTray();
   // Like the first fill: in front, then back to wherever the user retried from.
   const [before] = await ext.tabs.query({ active: true, windowId: tab.windowId }).catch(() => []);
@@ -1575,6 +1576,12 @@ async function removeTabFromCrosspostSessions(tabId) {
   if (!session) return;
   session.tabIds = (session.tabIds || []).filter(id => id !== tabId);
   if (session.sourceTabId === tabId) session.sourceTabId = null;
+  // A destination whose tab is closed (its row's × or the tab strip) shows
+  // as closed until a retry reopens it in a new tab.
+  const handoff = session.handoff;
+  const closed = (handoff?.networks || []).filter(network => handoff.destinationTabs?.[network] === tabId
+    || (handoff.results || []).some(item => item.network === network && item.tabId === tabId));
+  if (closed.length) handoff.closedNetworks = [...new Set([...(handoff.closedNetworks || []), ...closed])];
   if (session.lastActiveTabId === tabId) session.lastActiveTabId = session.tabIds[0] ?? null;
   if (!session.tabIds.length) crosspostSessions.delete(session.id);
   else session.updatedAt = Date.now();

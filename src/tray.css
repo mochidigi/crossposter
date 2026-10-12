@@ -33,6 +33,25 @@ main { padding: 12px; }
 .handoff-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; grid-template-areas: "icon title actions" ". detail detail"; align-items: start; gap: 0 9px; padding: 8px 9px; background: var(--surface); }
 .handoff-row > .network-icon { grid-area: icon; }
 .handoff-row + .handoff-row { border-top: 1px solid var(--line-soft); }
+/* A row with an open tab switches to it on a click anywhere outside its
+   buttons; its name and state are the button that takes focus. */
+.handoff-row.openable { cursor: pointer; }
+.handoff-row.openable:not(.current):hover { background: var(--surface-muted); }
+button.handoff-row-title { padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; text-align: left; }
+.handoff-row button.handoff-row-title:focus-visible { outline: none; }
+.handoff-row:has(> .handoff-row-title:focus-visible) { outline: 2px solid var(--ink); outline-offset: -2px; }
+/* The destination whose tab is in front (tray.js markActiveRow), marked
+   like the selected crosspost above it. */
+.handoff-row.current { background: var(--surface-sunken); box-shadow: inset 3px 0 var(--ink); }
+/* The full-height column on the right, like the crosspost card's ×: it
+   closes the destination's tab, then reopens it once the tab is gone. The
+   row gives up its right padding so the column meets the edge, its border
+   in line with the card's above. */
+.handoff-row.with-side { grid-template-columns: 26px minmax(0, 1fr) auto 34px; grid-template-areas: "icon title actions side" ". detail detail side"; padding-right: 0; }
+.handoff-row-side { display: grid; grid-area: side; align-self: stretch; width: 34px; margin: -8px 0; padding: 0; place-items: center; border: 0; border-left: 1px solid var(--line-soft); color: var(--ink); background: transparent; cursor: pointer; font: inherit; font-size: 17px; }
+.handoff-row-side:hover { color: var(--ink-inverse); background: var(--ink); }
+.handoff-row-side .ui-icon { width: 15px; height: 15px; }
+.handoff-row.tone-closed > .network-icon, .handoff-row.tone-closed > .handoff-row-title { opacity: .5; }
 .network-icon { display: grid; width: 26px; height: 26px; place-items: center; border: 1px solid var(--line-soft); background: var(--network-tile); }
 .network-icon img { display: block; width: 16px; height: 16px; object-fit: contain; }
 .handoff-row-title { display: grid; grid-area: title; min-width: 0; gap: 1px; }

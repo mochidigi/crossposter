@@ -18,34 +18,43 @@ export function handoffNetworkStatuses(handoff, { copyFrom = "from the sidebar" 
   if (!handoff || handoff.state === "idle") return [];
   const results = new Map((handoff.results || []).map(item => [item.network, item]));
   const posted = new Set(handoff.postedNetworks || []);
+  // Destinations whose tab the user closed (background.js
+  // removeTabFromCrosspostSessions), until a retry reopens them.
+  const closed = new Set(handoff.closedNetworks || []);
   const tabs = handoff.destinationTabs || {};
   const finished = !["preparing", "filling"].includes(handoff.state);
   // One destination at a time can be filled again, once the crosspost is done.
   const canRetry = handoff.state === "ready" && !handoff.retrying;
   return (handoff.networks || []).map(nativeDestination).filter(Boolean).map(destination => {
     const entry = results.get(destination.id);
-    const tabId = [entry?.tabId, tabs[destination.id]].find(Number.isInteger) ?? null;
+    const isClosed = closed.has(destination.id);
+    const tabId = isClosed ? null : [entry?.tabId, tabs[destination.id]].find(Number.isInteger) ?? null;
+    const settled = finished && handoff.retrying !== destination.id;
     return {
       network: destination.id,
       label: destination.label,
       icon: destination.icon,
       tabId,
-      reportable: finished && handoff.retrying !== destination.id && isReportableFailure(entry),
-      ...networkState(handoff, destination, entry, posted.has(destination.id), copyFrom)
+      // Its tab can be closed from the row once it is no longer filling.
+      closable: settled && Number.isInteger(tabId),
+      reportable: settled && !isClosed && isReportableFailure(entry),
+      ...networkState(handoff, destination, entry, posted.has(destination.id), isClosed, copyFrom)
     };
   }).map(status => ({ ...status, retryable: canRetry && RETRYABLE.has(status.state) }));
 }
 
 // Retrying reloads the tab, so it is offered only where nothing filled in
 // is lost that the user would want: failures, sign-ins, and partial fills.
-const RETRYABLE = new Set(["failed", "signed-out", "manual", "partial"]);
+// A closed tab is reopened in a new tab and filled again.
+const RETRYABLE = new Set(["failed", "signed-out", "manual", "partial", "closed"]);
 
-function networkState(handoff, { id }, entry, posted, copyFrom) {
+function networkState(handoff, { id }, entry, posted, closed, copyFrom) {
   if (posted) return { state: "posted", tone: "done", text: "Posted", detail: "" };
   // Destinations fill at the same time; each one still filling has its own
   // stage in handoff.progress.
   const stage = handoff.progress?.[id] ? handoffStageText(handoff.progress[id]) : "";
   if (handoff.retrying === id) return { state: "working", tone: "progress", text: stage || "Reloading the composer…", detail: "" };
+  if (closed) return { state: "closed", tone: "closed", text: "Tab closed", detail: "" };
   if (entry) {
     const result = entry.result || {};
     const error = entry.error || result.error || "";
@@ -85,16 +94,22 @@ export function handoffSummary(handoff, statuses = handoffNetworkStatuses(handof
   if (total && statuses.every(item => item.state === "posted")) return { title: "Posted everywhere", lead: "Every destination in this crosspost has been posted.", finished: true };
   const attention = statuses.filter(item => item.tone === "action" || item.tone === "error").length;
   if (attention) return { title: `${attention} of ${total} need${attention === 1 ? "s" : ""} attention`, lead: `Finish ${attention === 1 ? "it in its tab" : "those in their tabs"}. The sidebar has the text and media to copy or drag.`, finished: true };
+  if (total && statuses.every(item => item.state === "posted" || item.state === "closed")) return { title: "Composer tabs closed", lead: "Reopen a destination to fill it again.", finished: true };
   return { title: "Ready to review", lead: "Each composer is filled. Review and post in its tab.", finished: true };
 }
 
 // One status row (<li>) for a destination: the icon, the name over its state,
-// and the buttons ([retry] [Report] [Open]) side by side, top-aligned; any
-// details get a line of their own below. `openTab`, `retry`, and `report` receive the
-// row's status; the row offers each only when it applies, so a filled row is
-// one line with just Open. The DOM keeps name, state, details, then buttons
-// for screen readers; the grid places the buttons on the top line.
-export function handoffStatusRow(status, { openTab, retry, report } = {}) {
+// and the buttons ([retry] [Report]) side by side, top-aligned; any details
+// get a line of their own below. A full-height column on the right, like the
+// crosspost card's ×, closes the destination's tab, and once it is closed,
+// reopens it (a retry in a new tab). `openTab`, `closeTab`, `retry`, and
+// `report` receive the row's status; the row offers each only when it
+// applies, so a filled row is one line. A row whose tab is open switches to
+// it when clicked anywhere but its buttons; the name and state are that
+// button for keyboards and screen readers. The DOM keeps name, state,
+// details, then buttons for screen readers; the grid places the buttons on
+// the top line.
+export function handoffStatusRow(status, { openTab, closeTab, retry, report } = {}) {
   const element = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -104,9 +119,18 @@ export function handoffStatusRow(status, { openTab, retry, report } = {}) {
   const row = element("li", `handoff-row tone-${status.tone}`);
   const icon = element("span", "network-icon"), image = element("img");
   image.src = status.icon; image.alt = ""; icon.append(image);
-  const title = element("div", "handoff-row-title");
-  title.append(element("span", "handoff-row-name", status.label), element("span", "handoff-row-state", status.text));
-  const parts = [icon, title];
+  const openable = Boolean(openTab) && Number.isInteger(status.tabId);
+  const heading = element(openable ? "button" : "div", "handoff-row-title");
+  heading.append(element("span", "handoff-row-name", status.label), element("span", "handoff-row-state", status.text));
+  if (openable) {
+    heading.type = "button"; heading.title = `Switch to the ${status.label} tab`;
+    row.classList.add("openable");
+    row.onclick = event => {
+      const button = event.target.closest("button");
+      if (!button || button === heading) openTab(status);
+    };
+  }
+  const parts = [icon, heading];
   if (status.detail) {
     const detail = element("span", "handoff-row-detail", status.detail);
     detail.title = status.error && status.error !== status.detail ? `${status.detail}\n\n${status.error}` : status.detail;
@@ -119,13 +143,22 @@ export function handoffStatusRow(status, { openTab, retry, report } = {}) {
     actions.append(button);
     return button;
   };
-  if (retry && status.retryable) {
+  const reopen = status.state === "closed";
+  if (retry && status.retryable && !reopen) {
     const button = action("", `Retry: reload the ${status.label} tab and fill it again`, retry, "secondary handoff-retry");
     button.setAttribute("aria-label", `Retry ${status.label}`);
     setHtml(button, uiIcon("refresh"));
   }
   if (report && status.reportable) action("Report", "Opens Crossposter’s feedback form with details for fixing this. Nothing is sent until you press Send there.", report);
-  if (openTab && Number.isInteger(status.tabId)) action(status.state === "signed-out" ? "Sign in" : "Open", `Switch to the ${status.label} tab`, openTab);
   row.append(...parts, actions);
+  const side = (name, label, handler) => {
+    const button = element("button", `handoff-row-side handoff-row-${name}`);
+    button.type = "button"; button.title = label; button.setAttribute("aria-label", label);
+    button.onclick = () => handler(status);
+    row.classList.add("with-side"); row.append(button);
+    return button;
+  };
+  if (closeTab && status.closable) side("close", `Close the ${status.label} tab`, closeTab).textContent = "×";
+  else if (retry && status.retryable && reopen) setHtml(side("reopen", `Reopen ${status.label} in a new tab and fill it again`, retry), uiIcon("refresh"));
   return row;
 }

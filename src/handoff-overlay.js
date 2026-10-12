@@ -49,7 +49,7 @@
         :host { all: initial; position: fixed; inset: 0; z-index: 2147483647; display: grid; place-items: center;
           --ink: #111; --muted: #626262; --line: #c8c8c3; --surface: #fff; --current: #f4f4f1;
           --done: #147a3d; --action: #8a5300; --error: #a12424;
-          color: var(--ink); background: #f4f4f1; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+          color: var(--ink); background: rgb(244 244 241 / .96); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
         .card { display: grid; gap: 14px; width: min(420px, calc(100vw - 48px)); padding: 24px; border: 1px solid var(--line); background: var(--surface); }
         .title { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
         .rows { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
@@ -68,7 +68,7 @@
         .show { justify-self: start; padding: 4px 0; border: 0; color: var(--muted); background: none; font: inherit; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
         @media (prefers-color-scheme: dark) {
           :host { --ink: #f0f0eb; --muted: #a8a8a2; --line: #4b4b48; --surface: #1c1c1b; --current: #2b2b29;
-            --done: #4fbf7a; --action: #f0b45a; --error: #ff8f84; background: #121211; }
+            --done: #4fbf7a; --action: #f0b45a; --error: #ff8f84; background: rgb(18 18 17 / .96); }
         }
         @keyframes spin { to { transform: rotate(1turn); } }
         @media (prefers-reduced-motion: reduce) { .tone-progress.current .state::before { animation-duration: 2.4s; } }

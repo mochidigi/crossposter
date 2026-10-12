@@ -20,9 +20,19 @@ let renderGeneration = 0, mediaCacheKey = "";
 let sessions = [], selectedSessionId = "";
 let hadSessions = false;
 const mediaCache = new Map();
+// The tab in front in this window. Its destination row stays highlighted,
+// whether the user got there by clicking the row or by the tab strip.
+let activeTabId = Number.isInteger(panelWindowId)
+  ? (await ext.tabs.query({ active: true, windowId: panelWindowId }).catch(() => []))[0]?.id ?? null
+  : null;
 
 ext.runtime.onMessage.addListener(message => {
   if (message?.type === "CROSSPOST_SESSIONS_UPDATED") renderSessions(message).catch(showRenderError);
+});
+ext.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  if (Number.isInteger(panelWindowId) && windowId !== panelWindowId) return;
+  activeTabId = tabId;
+  markActiveRow();
 });
 
 const initial = await ext.runtime.sendMessage({ type: "GET_CROSSPOST_SESSIONS", windowId: panelWindowId }).catch(() => null);
@@ -121,11 +131,17 @@ async function render(handoff) {
   empty.hidden = true; content.hidden = false;
   const statuses = handoffNetworkStatuses(handoff, { copyFrom: "from below" });
   targets.hidden = !statuses.length;
-  targets.replaceChildren(...statuses.map(item => handoffStatusRow(item, {
-    openTab: row => activateComposerTab(row.tabId, row.label),
-    retry: row => retryDestination(row),
-    report: row => openFeedback("error", row.network)
-  })));
+  targets.replaceChildren(...statuses.map(item => {
+    const element = handoffStatusRow(item, {
+      openTab: row => activateComposerTab(row.tabId, row.label),
+      closeTab: row => closeComposerTab(row.tabId, row.label),
+      retry: row => retryDestination(row),
+      report: row => openFeedback("error", row.network)
+    });
+    if (Number.isInteger(item.tabId)) element.dataset.tabId = String(item.tabId);
+    return element;
+  }));
+  markActiveRow();
   mediaHint.textContent = statuses.length === 1
     ? `Drag a file into ${statuses[0].label}’s upload area.`
     : "Drag a file into each composer’s upload area.";
@@ -174,6 +190,24 @@ function retryDestination(row) {
   ext.runtime.sendMessage({ type: "RETRY_NATIVE_HANDOFF", sessionId: selectedSessionId, network: row.network })
     .then(response => { if (!response?.ok) failed(response?.error); })
     .catch(() => failed());
+}
+
+// The background marks the row closed when the tab goes, as it does for a
+// tab closed from the tab strip.
+async function closeComposerTab(tabId, label) {
+  try { await ext.tabs.remove(tabId); }
+  catch { showStatus(`${label}’s composer tab is no longer open.`); }
+}
+
+// Highlights the destination row whose tab is in front. Switching to a tab of
+// another crosspost re-renders the rows for it; any other tab clears it.
+function markActiveRow() {
+  for (const row of targets.children) {
+    const current = Number.isInteger(activeTabId) && row.dataset.tabId === String(activeTabId);
+    row.classList.toggle("current", current);
+    if (current) row.setAttribute("aria-current", "true");
+    else row.removeAttribute("aria-current");
+  }
 }
 
 async function activateComposerTab(tabId, label) {

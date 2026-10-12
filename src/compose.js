@@ -1154,6 +1154,7 @@ function renderHandoffPanel(handoff) {
   handoffLead.textContent = summary.lead;
   handoffStatus.replaceChildren(...statuses.map(status => handoffStatusRow(status, {
     openTab: row => focusComposerTab(row.tabId, row.label),
+    closeTab: row => closeComposerTab(row.tabId, row.label),
     retry: row => retryDestination(row),
     report: row => openFeedback("error", row.error || row.detail || row.text, row.network)
   })));
@@ -1175,6 +1176,11 @@ async function focusComposerTab(tabId, label) {
     const tab = await ext.tabs.update(tabId, { active: true });
     if (Number.isInteger(tab?.windowId)) await ext.windows.update(tab.windowId, { focused: true });
   } catch { showToast(`${label}’s tab is no longer open.`); }
+}
+
+// The background marks the row closed once the tab is gone.
+async function closeComposerTab(tabId, label) {
+  try { await ext.tabs.remove(tabId); } catch { showToast(`${label}’s tab is no longer open.`); }
 }
 
 // Fills one destination again; the panel follows the session updates.
