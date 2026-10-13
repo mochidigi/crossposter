@@ -127,7 +127,9 @@
       if (!(location.hostname === "x.com" || location.hostname.endsWith("twitter.com"))) throw new Error("Open X in this tab, then use the Crossposter sidebar.");
       const report = stage => helpers.reportComposerStage?.(handoff.handoffId, "x", stage);
       report("locate");
-      let field = composerField(helpers);
+      // Opened on X's post intent, the composer comes up holding the text;
+      // the intent's layout may or may not wrap it in a dialog.
+      let field = await helpers.prefilledComposer?.(`${INLINE_FIELD}, ${DIALOG_FIELD}`, handoff) || composerField(helpers);
       if (!field) {
         if (!onComposeRoute()) {
           const launch = helpers.findVisible("[data-testid='SideNav_NewTweet_Button'], a[href='/compose/post']");

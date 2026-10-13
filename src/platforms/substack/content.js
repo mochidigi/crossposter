@@ -20,6 +20,7 @@
   const ATTACHMENT_REMOVE = "[data-testid='remove-attachment']";
   const VIDEO_PREVIEW = "video[data-video-id]";
   const COMPOSER_WAIT_MS = 20000;
+  const LAUNCH_RETRY_MS = 1500;
   const DOCUMENT_POSITION_FOLLOWING = 4;
 
   const noteByPost = new WeakMap();
@@ -163,8 +164,17 @@
           if (isOpenDialog(launch)) composer = launch;
           else {
             report("open");
-            launch.click();
-            try { composer = await wait(() => findComposer(helpers), COMPOSER_WAIT_MS, 250); }
+            // The server-rendered launcher ignores clicks until Substack's
+            // scripts hydrate the feed: a fresh tab clicked within 5 ms of
+            // loading never opened the composer (2026-10-13). Click again
+            // while no dialog has opened.
+            let clickedAt = 0;
+            const click = () => {
+              if (Date.now() - clickedAt < LAUNCH_RETRY_MS || helpers.queryAllDeep("[role='dialog'][data-state='open']").length) return;
+              (findLauncher(helpers) || launch).click();
+              clickedAt = Date.now();
+            };
+            try { composer = await wait(() => findComposer(helpers) || click(), COMPOSER_WAIT_MS, 250); }
             catch { return result(MESSAGES.open); }
           }
         }
@@ -334,7 +344,10 @@
 
   // Tiptap renders each line as a paragraph (Firefox's insertText adds an
   // empty one per blank line) and links URLs, so compare the words only.
+  // Its paste also turns Markdown-style *em*, _em_, **strong**, `code`, and
+  // ~~strike~~ into formatting and drops the markers (2026-10-13), so those
+  // characters are ignored too.
   function normalizeComposerText(value) {
-    return String(value || "").replace(/[​-‍⁠﻿]/g, "").replace(/\s+/g, " ").trim();
+    return String(value || "").replace(/[​-‍⁠﻿]/g, "").replace(/[*_`~]/g, "").replace(/\s+/g, " ").trim();
   }
 })();

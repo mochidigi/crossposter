@@ -168,7 +168,8 @@
       const selector = COMPOSER_FIELD;
       const findField = () => helpers.queryAllDeep(selector).find(element => helpers.isVisible(element) && composerRoot(element, helpers)) || null;
       report("locate");
-      let field = findField();
+      // Opened on Threads' post intent, the composer comes up holding the text.
+      let field = await helpers.prefilledComposer?.(selector, handoff, { accept: element => Boolean(composerRoot(element, helpers)) }) || findField();
       if (!field) {
         const outsideDialog = element => !element.closest("[role='dialog'], dialog");
         const launch = helpers.findIconControl?.(document, ICONS.create, "[role='button'], a")

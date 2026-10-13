@@ -98,7 +98,10 @@
         if (launch) return { launch };
         return blueskySignedOut() ? { signedOut: true } : null;
       };
-      const start = await helpers.waitForElement(findStart, LAUNCHER_WAIT_MS).catch(() => null);
+      // Opened on Bluesky's compose intent, the app opens the composer with the
+      // text 500 ms in, after its New post control has already appeared.
+      const prefilled = await helpers.prefilledComposer?.(selector, handoff, { giveUp: blueskySignedOut });
+      const start = prefilled ? { field: prefilled } : await helpers.waitForElement(findStart, LAUNCHER_WAIT_MS).catch(() => null);
       // A signed-out bsky.app still renders the public feed but no compose
       // control, so "open the composer" would send the user looking for a
       // button that does not exist. Say why instead; the reason keeps the

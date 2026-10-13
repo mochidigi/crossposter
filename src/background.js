@@ -3,7 +3,7 @@ import { foregroundQueue, isHandoffStage } from "./shared/handoff.js";
 import { handoffNetworkStatuses, handoffSummary } from "./shared/handoff-status.js";
 import { createDraft, postText } from "./shared/draft.js";
 import { resolveReshareMedia } from "./shared/downloaders.js";
-import { NATIVE_DESTINATIONS, nativeDestination } from "./shared/destinations.js";
+import { NATIVE_DESTINATIONS, destinationUrl, nativeDestination } from "./shared/destinations.js";
 import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, isSidePanelUnavailableError, isTabGroupingUnsupportedError, settleWithin, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { expandCapturedLinks } from "./shared/links.js";
@@ -1306,7 +1306,7 @@ async function retryNativeHandoff(sessionId, network) {
   const knownTabId = (handoff.closedNetworks || []).includes(network) ? null : [previous?.tabId, handoff.destinationTabs?.[network]].find(Number.isInteger);
   // A destination that loads in front loads at its turn (fillNativeComposer).
   let tab = Number.isInteger(knownTabId)
-    ? await (loadsInFront(target) ? ext.tabs.get(knownTabId) : ext.tabs.update(knownTabId, { url: target.homeUrl })).catch(() => null)
+    ? await (loadsInFront(target) ? ext.tabs.get(knownTabId) : ext.tabs.update(knownTabId, { url: destinationUrl(target, handoff.text).url })).catch(() => null)
     : null;
   if (!tab) {
     tab = await createNativeComposerTab(target, session, attemptId, session.windowId, session.sourceTabId);
@@ -1374,7 +1374,9 @@ async function createNativeComposerTab(target, session, attemptId, sourceWindowI
   try {
     // A destination that loads in front waits on Crossposter's own page
     // (handoff-wait.html) until its turn, rather than a white about:blank.
-    const tab = await ext.tabs.create(composerTabProperties(loadsInFront(target) ? ext.runtime.getURL("handoff-wait.html") : target.homeUrl, sourceWindowId, false));
+    // The others open on their prefill link for this handoff's text, if any.
+    const url = loadsInFront(target) ? ext.runtime.getURL("handoff-wait.html") : destinationUrl(target, session.handoff?.text).url;
+    const tab = await ext.tabs.create(composerTabProperties(url, sourceWindowId, false));
     if (!isCurrentHandoff(session.id, attemptId)) {
       await ext.tabs.remove(tab.id).catch(() => {});
       throw new Error("Crossposting was cancelled.");
@@ -1396,8 +1398,12 @@ async function createNativeComposerTab(target, session, attemptId, sourceWindowI
 // ran about four times slower.
 async function fillNativeComposer(target, initialTab, handoff) {
   let tab = initialTab;
+  // X, Threads and Bluesky open on their own prefill link, so the composer
+  // already holds the text and the adapter only waits for it.
+  const link = destinationUrl(target, handoff.text);
+  let prefilled = link.prefilled;
   const deliver = async () => {
-    try { return await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff: { ...handoff, inFront: true } }); }
+    try { return await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff: { ...handoff, inFront: true, prefilled } }); }
     catch (error) { return { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
   };
   // A destination that loads in front (X in Chrome) opened blank and loads
@@ -1408,14 +1414,16 @@ async function fillNativeComposer(target, initialTab, handoff) {
   if (!loadNow) {
     try { await settleWithin(Promise.resolve(ext.tabs.warmup?.(tab.id)), 1500, "warmup"); } catch {}
   }
-  tab = await ext.tabs.update(tab.id, loadNow ? { url: target.homeUrl, active: true } : { active: true });
+  tab = await ext.tabs.update(tab.id, loadNow ? { url: link.url, active: true } : { active: true });
   if (tab.windowId != null) await ext.windows.update(tab.windowId, { focused: true }).catch(() => {});
   await waitForTab(tab.id, tab.status, target.label);
   let result = await deliver();
-  // If X's SPA ignored its visible compose control, use the canonical route as
-  // a deterministic fallback and retry after the document has loaded. This is
-  // deliberately limited to opening/filling the composer; posting stays manual.
+  // If X's SPA ignored its visible compose control (or its prefill link showed
+  // no composer), use the canonical route as a deterministic fallback, and
+  // fill the text there, after the document has loaded. This is deliberately
+  // limited to opening/filling the composer; posting stays manual.
   if (shouldRetryCanonicalComposer(target.id, result)) {
+    prefilled = false;
     tab = await ext.tabs.update(tab.id, { url: target.homeUrl, active: true });
     await waitForTab(tab.id, tab.status, target.label);
     result = await deliver();

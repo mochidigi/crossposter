@@ -36,19 +36,12 @@
     captureMedia: linkedInCaptureMedia,
     videoInfo: linkedInVideoInfo,
     prepareCapture: ({ post, helpers }) => expandLinkedInText(post, helpers),
-    inlineActionText: "Crosspost",
-    inlineActionMount: ({ post, helpers }) => {
-      // LinkedIn localizes the action labels ("Kommentera", "Skicka", …) but
-      // keeps stable SVG symbol ids on the icons, so match those first.
-      const actions = helpers.queryAllDeep("button, a", post);
-      const comment = findAction(actions, ACTION_ICONS.comment, helpers);
-      const repost = findAction(actions, ACTION_ICONS.repost, helpers);
-      const send = findAction(actions, ACTION_ICONS.send, helpers);
-      const container = send?.parentElement;
-      return container && comment?.parentElement === container && repost?.parentElement === container
-        ? { container, template: send, templateLabel: helpers.normalizeText(send) || "Send" }
-        : null;
-    },
+    // LinkedIn's User Agreement bars inserting elements into its pages or
+    // changing their appearance, so Crossposter adds no Crosspost button to
+    // its posts (capture there is the context menu's Crosspost) and a posted
+    // LinkedIn tab keeps its own title and favicon (no "✓" marker). See
+    // "Platform terms" in CLAUDE.md.
+    postedMarker: false,
     ownsPage: ({ helpers }) => linkedInOwnsPage(helpers),
     composerReadiness: ({ helpers }) => {
       const composer = findShareDialog(helpers);
@@ -68,20 +61,11 @@
   core.register(adapter);
 
   // Stable, language-independent hooks: LinkedIn's icon sprites keep the same
-  // symbol id (svg#comment-small / <use href="#comment-small">) whatever the
+  // symbol id (svg#image-medium / <use href="#image-medium">) whatever the
   // UI language. Labels are a last-resort fallback for older markup.
   const ACTION_ICONS = Object.freeze({
-    comment: { ids: ["comment-small", "comment-medium"], labels: ["comment"] },
-    repost: { ids: ["repost-small", "repost-medium"], labels: ["repost"] },
-    send: { ids: ["send-privately-small", "send-privately-medium"], labels: ["send"] },
     addMedia: { ids: ["image-medium", "image-small"], labels: ["add media"] }
   });
-
-  function findAction(actions, icon, helpers) {
-    return actions.find(element => helpers.iconMatches?.(element, { ids: icon.ids }))
-      || actions.find(element => icon.labels.includes(helpers.normalizeText(element).toLowerCase()))
-      || null;
-  }
 
   function findStartPostLauncher(helpers) {
     const usable = element => Boolean(element) && helpers.isVisible(element) && !helpers.closestDeep(element, "[role='dialog']");

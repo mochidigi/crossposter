@@ -13,6 +13,33 @@ export const NATIVE_DESTINATIONS = Object.freeze([
 ]);
 
 export function nativeDestination(id) { return NATIVE_DESTINATIONS.find(destination => destination.id === id) || null; }
+
+// The platforms' own links that open their composer with the text already in
+// it: X Web Intents, Threads Web Intents and Bluesky's action intent links.
+// None of them carries media, which the adapter still attaches. maxLength
+// mirrors the adapter's own cap (Threads takes 500 characters).
+const PREFILL_LINKS = Object.freeze({
+  x: { base: "https://x.com/intent/tweet" },
+  bluesky: { base: "https://bsky.app/intent/compose" },
+  threads: { base: "https://www.threads.com/intent/post", maxLength: 500 }
+});
+// Servers commonly refuse a request line over 8 KB; longer text goes through
+// the home page and the composer fill instead.
+const MAX_PREFILL_URL_LENGTH = 6000;
+
+// Where a destination's tab opens for a handoff, and whether that link puts
+// the text in the composer (the adapter then waits for it rather than typing).
+export function destinationUrl(destination, text = "") {
+  const home = { url: destination?.homeUrl || "", prefilled: false };
+  const link = PREFILL_LINKS[destination?.id];
+  const value = String(text || "").slice(0, link?.maxLength ?? Infinity);
+  if (!link || !value.trim()) return home;
+  let url;
+  try { url = `${link.base}?text=${encodeURIComponent(value)}`; }
+  catch { return home; } // a lone surrogate, e.g. an emoji cut at maxLength
+  return url.length <= MAX_PREFILL_URL_LENGTH ? { url, prefilled: true } : home;
+}
+
 export function isNativeDestinationDisabled(draft, id) {
   return draft.sourceIsOwn === true && draft.sourceNetwork === id;
 }

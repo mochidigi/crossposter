@@ -549,7 +549,12 @@
     if (response?.ok && response.posted) markPagePosted();
   }
 
+  // A posted tab's favicon: a white check on green. It is inline so that no
+  // extension file is web-accessible to these sites.
+  const POSTED_FAVICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#147a3d"/><path d="m8 16 5 5L24 10" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>')}`;
+
   function markPagePosted() {
+    if (currentAdapter()?.postedMarker === false) return;
     ensurePostedMarker();
     if (postedMarkerObserver) return;
     postedMarkerObserver = new MutationObserver(ensurePostedMarker);
@@ -566,7 +571,7 @@
       if (!favicon) {
         favicon = document.createElement("link");
         favicon.rel = "icon"; favicon.type = "image/svg+xml"; favicon.dataset.crossposterPostedIcon = "true";
-        favicon.href = runtime.getURL("icons/posted.svg");
+        favicon.href = POSTED_FAVICON;
       }
       const icons = [...document.head.querySelectorAll("link[rel~='icon']")];
       if (icons.at(-1) !== favicon) document.head.append(favicon);
@@ -711,6 +716,21 @@
     return inserted;
   }
 
+  // A destination opened on its own prefill link (X, Threads, Bluesky; see
+  // destinationUrl) shows a composer that already holds the text, possibly a
+  // moment after the page loads (Bluesky opens it 500 ms in). Wait for that
+  // composer rather than open another one or type into it. null when none
+  // shows up with text in time, or once the page asks for a password (signed
+  // out, X and Threads redirect the link to their login) or `giveUp` holds;
+  // the adapter then opens and fills one itself.
+  const PREFILLED_COMPOSER_WAIT_MS = 10000;
+  function prefilledComposer(selector, handoff, { accept = () => true, giveUp = () => false } = {}) {
+    if (!handoff?.prefilled || !String(handoff.text || "").trim()) return Promise.resolve(null);
+    const find = () => queryAllDeep(selector).find(element => isVisible(element) && composerHasText(element) && accept(element))
+      || (isVisible(document.querySelector("input[type='password']")) || giveUp() ? document : null);
+    return waitForElement(find, PREFILLED_COMPOSER_WAIT_MS).then(found => found === document ? null : found).catch(() => null);
+  }
+
   function compatibleFiles(files) {
     const wantsVideo = files.some(file => file.type.startsWith("video/"));
     return files.filter(file => wantsVideo ? file.type.startsWith("video/") : file.type.startsWith("image/"));
@@ -820,7 +840,7 @@
     mediaFromNodes, identityFromHref, firstText, textWithLinkUrls, capturePost: capture,
     manualResult, composerNotFound, queryAllDeep, closestDeep, findVisible, normalizeText, isVisible, findDialogWithText, findClickable, waitForElement,
     svgOf, iconMatches, iconControls, findIconControl, textWithout,
-    setComposerText, insertComposerTextOnce, pasteComposerText, composerHasText, fillComposerTextOnce,
+    setComposerText, insertComposerTextOnce, pasteComposerText, composerHasText, fillComposerTextOnce, prefilledComposer,
     attachNativeFiles, fillNativeComposer, findCompatibleFileInput, attachFilesToInput, reportComposerStage
   });
 

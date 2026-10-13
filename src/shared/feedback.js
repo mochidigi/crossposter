@@ -102,7 +102,8 @@ export function hasReportableHandoffError(handoff) {
 
 // Sign-in, sign-up, and account-checkpoint routes of the supported sites. A
 // destination tab that lands on one of these after a handoff is signed out.
-export const SIGN_IN_PATH = /^\/(?:login|signin|sign-in|signup|sign-up|i\/flow\/(?:login|signup)|accounts\/(?:login|emailsignup|signup)|uas\/login|authwall|checkpoint|recover)(?:[/?#.]|$)/i;
+// Signed out, X sends its post intent to /i/jf/onboarding/web (2026-10-12).
+export const SIGN_IN_PATH = /^\/(?:login|signin|sign-in|signup|sign-up|i\/flow\/(?:login|signup)|i\/jf\/onboarding|accounts\/(?:login|emailsignup|signup)|uas\/login|authwall|checkpoint|recover)(?:[/?#.]|$)/i;
 
 export function isSignInUrl(url) {
   try { return SIGN_IN_PATH.test(new URL(url).pathname); }
