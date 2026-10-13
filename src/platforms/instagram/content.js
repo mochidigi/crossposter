@@ -67,7 +67,9 @@
     postSelectors: ["article"],
     inlineActionMount: ({ post, helpers }) => instagramActionMount(post, helpers),
     prepareCapture: async ({ post }) => {
-      if (!post || metadataByPost.has(post)) return;
+      // The Reels viewer has no <article>, so its reels share document.body
+      // as their boundary; the reel in view changes as the user scrolls.
+      if (!post || (metadataByPost.has(post) && post !== document.body)) return;
       const url = instagramSourceUrl(post);
       const code = instagramShortcode(url);
       if (!url || !code) { metadataByPost.set(post, null); return; }
@@ -224,18 +226,53 @@
     return "";
   }
 
+  // A feed post links to its permalink. The Reels viewer (where /reel/<code>/
+  // redirects) has no per-reel link, but its URL names the reel in view.
   function instagramSourceUrl(post) {
-    const href = post?.querySelector?.("a[href^='/p/'], a[href^='/reels/']")?.getAttribute?.("href") || "";
+    const href = post && post !== document.body
+      ? [...(post.querySelectorAll?.("a[href*='/p/'], a[href*='/reel/'], a[href*='/reels/']") || [])]
+        .map(link => link.getAttribute?.("href") || "").find(instagramShortcode) || ""
+      : "";
     try { return href ? new URL(href, location.origin).href : location.href; }
     catch { return location.href || ""; }
   }
 
+  // /p/<code>/, /reel/<code>/, /reels/<code>/, optionally after /<username>,
+  // but not /reels/audio/<id>/.
   function instagramShortcode(url = "") {
-    try { return new URL(url, location.origin).pathname.match(/^\/(?:p|reels)\/([^/]+)/i)?.[1] || ""; }
+    try { return new URL(url, location.origin).pathname.match(/^\/(?:[^/]+\/)?(?:p|reels?)\/(?!audio\/)([A-Za-z0-9_-]+)(?:\/|$)/)?.[1] || ""; }
     catch { return ""; }
   }
 
+  // Post pages no longer embed the media (only the first reel opened in the
+  // viewer does), so ask the endpoint Instagram's web app uses. It answers
+  // "useragent mismatch" without the web app's id (2026-10-13).
+  const SHORTCODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const WEB_APP_ID = "936619743392459";
+
   async function fetchInstagramMetadata(url, code) {
+    return await fetchInstagramMediaInfo(code) || fetchInstagramPostPage(url, code);
+  }
+
+  async function fetchInstagramMediaInfo(code) {
+    try {
+      let id = 0n;
+      for (const character of code) {
+        const digit = SHORTCODE_ALPHABET.indexOf(character);
+        if (digit < 0) return null;
+        id = id * 64n + BigInt(digit);
+      }
+      const response = await fetch(new URL(`/api/v1/media/${id}/info/`, location.origin).href, {
+        credentials: "include",
+        headers: { "X-IG-App-ID": WEB_APP_ID }
+      });
+      if (!response.ok) return null;
+      const item = (await response.json())?.items?.[0];
+      return item?.code === code ? item : null;
+    } catch { return null; }
+  }
+
+  async function fetchInstagramPostPage(url, code) {
     try {
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) return null;
