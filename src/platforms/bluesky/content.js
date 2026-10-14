@@ -12,7 +12,8 @@
     // Feed posts are pressable DIVs in the current Bluesky web app, not
     // articles. Without this boundary a context-menu capture falls back to the
     // document body and copies the feed header instead of the clicked post.
-    postSelectors: ["[data-testid^='feedItem-by-'][role='link']", "[data-testid='postThreadItem']", "article"],
+    // A thread's posts are postThreadItem-by-<handle> (2026-10-14).
+    postSelectors: ["[data-testid^='feedItem-by-'][role='link']", "[data-testid^='postThreadItem']", "article"],
     prepareCapture: async ({ post }) => {
       if (!post || metadataByPost.has(post)) return;
       const url = blueskyPostUrl(post);
@@ -28,11 +29,35 @@
     },
     // Keep capture focused on the authored copy. Besides excluding post chrome,
     // this prevents the generic fallback from cloning a live video player.
-    captureText: ({ post }) => {
-      const metadata = metadataByPost.get(post);
-      if (typeof metadata?.record?.text === "string") return metadata.record.text.trim();
+    // The record's text holds only each link's label, often shortened
+    // ("blog.example.com/p/a-lo..."); the URL is in its facet (see
+    // blueskyLinkFacets), so the label is swapped for it.
+    captureText: ({ post, helpers }) => {
+      const record = metadataByPost.get(post)?.record;
+      if (typeof record?.text === "string") return blueskyTextWithLinks(record).trim();
       const text = post.querySelector("[data-testid='postText']");
-      return (text?.innerText || text?.textContent || "").trim();
+      const anchors = [...(text?.querySelectorAll?.("a[href^='http']") || [])];
+      return (anchors.length && helpers ? helpers.textWithLinkUrls(text, anchors) : text?.innerText || text?.textContent || "").trim();
+    },
+    // Inline links (facets) and the link card (an external embed) beside the
+    // text; the draft adds the URL of any the text does not carry. A quoted
+    // post is a record embed, and its links stay with it.
+    captureLinks: ({ post }) => {
+      const metadata = metadataByPost.get(post);
+      if (!metadata?.record) return [];
+      const links = new Map();
+      for (const facet of blueskyLinkFacets(metadata.record)) {
+        if (!links.has(facet.url)) links.set(facet.url, { url: facet.url, display: facet.label, title: "", inText: facet.replaced });
+      }
+      const external = blueskyExternalEmbed(metadata.embed);
+      const url = String(external?.uri || "");
+      const isMedia = blueskyEmbedMedia(metadata.embed).some(item => item.url === url);
+      if (/^https?:\/\//i.test(url) && !isMedia) {
+        const link = links.get(url) || { url, display: hostOf(url), title: "", inText: false };
+        link.title = String(external.title || "");
+        links.set(url, link);
+      }
+      return [...links.values()];
     },
     captureMedia: ({ post, helpers }) => {
       const resolved = blueskyEmbedMedia(metadataByPost.get(post)?.embed);
@@ -227,6 +252,61 @@
     const response = await fetch(`${BSKY_API}/app.bsky.feed.getPostThread?depth=0&uri=${encodeURIComponent(uri)}`);
     if (!response.ok) return null;
     return (await response.json())?.thread?.post || null;
+  }
+
+  // Each link facet's URL and label. Facet ranges count UTF-8 bytes, so they
+  // are mapped to string indexes. A label that is the URL itself, whole or
+  // shortened, is `replaced` by the URL in the text; any other label (some
+  // clients link words) stays, and the draft appends the URL.
+  function blueskyLinkFacets(record) {
+    const text = String(record?.text || "");
+    return (Array.isArray(record?.facets) ? record.facets : []).map(facet => {
+      const url = String((facet?.features || []).find(feature => /#link$/.test(feature?.["$type"] || ""))?.uri || "");
+      const start = utf8Index(text, facet?.index?.byteStart), end = utf8Index(text, facet?.index?.byteEnd);
+      const label = start < end ? text.slice(start, end) : "";
+      return { url, start, end, label, replaced: labelIsUrl(label, url) };
+    }).filter(facet => /^https?:\/\//i.test(facet.url) && facet.label).sort((left, right) => left.start - right.start);
+  }
+
+  function blueskyTextWithLinks(record) {
+    const text = String(record?.text || "");
+    let result = "", cursor = 0;
+    for (const facet of blueskyLinkFacets(record)) {
+      if (!facet.replaced || facet.start < cursor) continue;
+      result += text.slice(cursor, facet.start) + facet.url;
+      cursor = facet.end;
+    }
+    return result + text.slice(cursor);
+  }
+
+  function utf8Index(text, byteOffset) {
+    if (!Number.isInteger(byteOffset) || byteOffset <= 0) return 0;
+    let bytes = 0, index = 0;
+    for (const char of text) {
+      if (bytes >= byteOffset) break;
+      const code = char.codePointAt(0);
+      bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+      index += char.length;
+    }
+    return index;
+  }
+
+  function labelIsUrl(label, url) {
+    const bare = value => String(value).trim().replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+    const shown = bare(label).replace(/(?:\.\.\.|…)$/, "");
+    return Boolean(shown) && bare(url).startsWith(shown);
+  }
+
+  function blueskyExternalEmbed(embed) {
+    const type = embed?.["$type"] || "";
+    if (type.startsWith("app.bsky.embed.external")) return embed.external || null;
+    if (type.startsWith("app.bsky.embed.recordWithMedia")) return blueskyExternalEmbed(embed.media);
+    return null;
+  }
+
+  function hostOf(url) {
+    try { return new URL(url).hostname.replace(/^www\./i, ""); }
+    catch { return ""; }
   }
 
   function blueskyEmbedMedia(embed) {

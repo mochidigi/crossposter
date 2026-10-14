@@ -8,7 +8,7 @@ import { handoffFilename, handoffMediaType } from "./shared/handoff.js";
 import { muxMp4Tracks } from "./shared/hls.js";
 import { isStreamMedia, prepareStreamMedia } from "./shared/media-preparation.js";
 import { deleteHandoffMedia, getHandoffMedia, storeHandoffMedia } from "./shared/media-store.js";
-import { DRAFT_HISTORY_KEY, draftHistoryEntry, expireDraftHistory, removeDraftHistoryEntry, upsertDraftHistory } from "./shared/draft-history.js";
+import { DRAFT_HISTORY_KEY, draftHistoryAge, draftHistoryEntry, draftHistoryPreview, expireDraftHistory, removeDraftHistoryEntry, upsertDraftHistory } from "./shared/draft-history.js";
 import { continueLabel, NATIVE_DESTINATIONS, nativeDestinationBlocker, selectedNativeDestinations } from "./shared/destinations.js";
 import { handoffNetworkStatuses, handoffStatusRow, handoffSummary } from "./shared/handoff-status.js";
 import { CLIP_CUT_KEY, DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, initialDraftDestinations, inlineActionsEnabled, KNOWN_PLATFORMS_KEY, normalizeClipCut, normalizeDefaultDestinations, normalizeEnabledPlatforms, SHOW_INLINE_ACTIONS_KEY, storedEnabledPlatforms } from "./shared/preferences.js";
@@ -63,6 +63,13 @@ if (sessionId && !crosspostSession) {
   const sessionResponse = await ext.runtime.sendMessage({ type: "GET_CROSSPOST_SESSION", sessionId }).catch(() => null);
   crosspostSession = sessionResponse?.session || null;
 }
+// The background no longer knows this tab's session: reloading or updating
+// the extension clears session storage. Start an empty one here so Continue
+// works again; the history notice offers the drafts saved before.
+if (sessionId && !crosspostSession) {
+  const adopted = await ext.runtime.sendMessage({ type: "ADOPT_CROSSPOST_COMPOSER", sessionId }).catch(() => null);
+  crosspostSession = adopted?.session || null;
+}
 const dataLoadedAt = performance.now();
 const freshCompose = crosspostSession?.fresh === true || isFreshComposerUrl(location.href);
 const objectUrls = [];
@@ -81,6 +88,7 @@ const settingsDialog = document.querySelector("#settingsDialog"), settingsDestin
 const settingsInlineActions = document.querySelector("#settingsInlineActions"), settingsError = document.querySelector("#settingsError");
 const settingsClearData = document.querySelector("#settingsClearData"), settingsClearError = document.querySelector("#settingsClearError");
 const historyDialog = document.querySelector("#historyDialog"), historyList = document.querySelector("#historyList");
+const historyHint = document.querySelector("#historyHint");
 const clipDialog = document.querySelector("#clipDialog"), clipPreview = document.querySelector("#clipPreview");
 const clipStart = document.querySelector("#clipStart"), clipEnd = document.querySelector("#clipEnd");
 const clipStartLabel = document.querySelector("#clipStartLabel"), clipEndLabel = document.querySelector("#clipEndLabel");
@@ -158,6 +166,8 @@ document.querySelector("#historyOpen").onclick = openHistory;
 document.querySelector("#historyClose").onclick = closeHistory;
 document.querySelector("#historyDone").onclick = closeHistory;
 historyDialog.addEventListener("cancel", event => { event.preventDefault(); closeHistory(); });
+historyHint.onclick = openHistory;
+renderHistoryHint().catch(() => {});
 document.querySelector("#addMedia").onclick = () => document.querySelector("#file").click();
 document.querySelector("#file").onchange = event => {
   for (const file of [...event.target.files].slice(0, 4 - draft.media.length)) {
@@ -284,7 +294,11 @@ async function sourcePermissionsReady() {
     ? await ext.runtime.sendMessage({ type: "RESUME_CAPTURED_VIDEO", sessionId }).catch(error => ({ ok: false, error: error instanceof Error ? error.message : String(error) }))
     : { ok: true };
   if (!response?.ok) {
-    showSourcePermissionGate(response?.error || "Crossposter could not verify access to this platform.");
+    // Only a missing grant belongs in the access dialog. Any other failure
+    // (a lost session, say) would leave Allow access with nothing to grant.
+    const missing = await incompletePlatformPermissions(ext.permissions, [draft.sourceNetwork]);
+    if (missing.length) showSourcePermissionGate(response?.error || "Crossposter could not verify access to this platform.");
+    else showToast(response?.error || "Crossposter could not prepare this draft.", { report: true });
     return;
   }
   if (response.resumed && Array.isArray(response.media)) {
@@ -432,6 +446,16 @@ function renderComposerMode() {
   if (addLink) addLink.hidden = !captured;
 }
 
+// A new, empty post shows a quiet history icon beside its heading when saved
+// crossposts exist, in case the user meant to pick one up instead.
+async function renderHistoryHint() {
+  const history = draft.sourceUrl || draft.text || draft.media.length ? [] : await readDraftHistory();
+  historyHint.hidden = !history.length;
+  if (!history.length) return;
+  const latest = history[0];
+  historyHint.title = `Restore a recent crosspost: “${draftHistoryPreview(latest).slice(0, 60)}”, saved ${draftHistoryAge(latest.savedAt)}${history.length > 1 ? `, and ${history.length - 1} more` : ""}`;
+}
+
 async function openHistory() {
   await renderHistory();
   historyDialog.showModal();
@@ -446,7 +470,7 @@ async function renderHistory() {
     return;
   }
   setHtml(historyList, history.map(entry => {
-    const item = entry.draft || {}, preview = item.text?.trim() || (item.media?.length ? "Media post" : "Untitled draft");
+    const item = entry.draft || {}, preview = draftHistoryPreview(entry);
     const destinations = (item.destinations || []).map(label).join(", ") || "No destinations";
     const media = item.media?.length ? ` · ${item.media.length} media` : "";
     return `<article class="history-item" data-history-id="${escapeAttr(entry.id)}"><div class="history-copy"><time>${escapeAttr(formatHistoryTime(entry.savedAt))}</time><strong>${escapeAttr(preview.slice(0, 120))}</strong><span>${escapeAttr(destinations)}${media}</span></div><div class="history-actions"><button class="secondary" data-history-restore type="button">Restore</button><button class="icon-button" data-history-delete type="button" aria-label="Delete saved draft" title="Delete">${icon("trash")}</button></div></article>`;
@@ -463,6 +487,7 @@ async function restoreHistory(id) {
   draft.media = await hydrateStoredMedia(entry.draft.media);
   draft.destinations = initialDraftDestinations(draft, stored[DEFAULT_DESTINATIONS_KEY], enabledPlatforms);
   text.value = draft.text;
+  historyHint.hidden = true;
   renderComposerMode(); renderAll(); closeHistory();
   showToast("Draft restored. Review it before continuing.");
 }
@@ -1178,7 +1203,8 @@ async function focusComposerTab(tabId, label) {
   } catch { showToast(`${label}’s tab is no longer open.`); }
 }
 
-// The background marks the row closed once the tab is gone.
+// The background marks the row closed once the tab is gone, and closes
+// Compose with the last one (see closeComposerAfterLastDestination).
 async function closeComposerTab(tabId, label) {
   try { await ext.tabs.remove(tabId); } catch { showToast(`${label}’s tab is no longer open.`); }
 }
@@ -1219,6 +1245,7 @@ async function cancelNativeHandoff() {
 
 async function publish() {
   const errors = validateDraft(draft); const box = document.querySelector("#errors"); box.textContent = errors.join(" "); if (errors.length) return;
+  historyHint.hidden = true;
   const selected = selectedNativeDestinations(draft), networkIds = selected.map(destination => destination.id), button = document.querySelector("#publish");
   // Request each selected platform's complete page/API/media bundle while the
   // extension-page click still carries a user gesture. Recheck the source too
@@ -1410,4 +1437,9 @@ if (composeUrl.searchParams.get("settings") === "1") {
   composeUrl.searchParams.delete("settings");
   history.replaceState(null, "", composeUrl.href);
   openSettings();
+}
+if (composeUrl.searchParams.get("history") === "1") {
+  composeUrl.searchParams.delete("history");
+  history.replaceState(null, "", composeUrl.href);
+  openHistory();
 }

@@ -1,5 +1,6 @@
 import { ext } from "./shared/browser.js";
 import { missingSitePlatforms, platformLabel, requestCompletePlatformPermissions } from "./shared/platform-permissions.js";
+import { DRAFT_HISTORY_KEY, draftHistoryAge, draftHistoryPreview, expireDraftHistory } from "./shared/draft-history.js";
 
 const siteAccess = document.querySelector("#siteAccess");
 const allowSiteAccess = document.querySelector("#allowSiteAccess");
@@ -26,6 +27,21 @@ missingSitePlatforms(ext.permissions, ext.runtime.getManifest()).then(missing =>
 
 document.querySelector("#showInfo").onclick = async () => {
   const response = await ext.runtime.sendMessage({ type: "OPEN_CROSSPOST_COMPOSER", fresh: true, showOnboarding: true }).catch(() => null);
+  if (response?.ok) window.close();
+};
+
+// Shown, like Compose's history icon, once there are saved crossposts to
+// pick up again; it opens Compose with draft history.
+const openHistory = document.querySelector("#openHistory");
+ext.storage.local.get(DRAFT_HISTORY_KEY).then(stored => {
+  const { history } = expireDraftHistory(stored[DRAFT_HISTORY_KEY]);
+  if (!history.length) return;
+  openHistory.title = `Draft history: “${draftHistoryPreview(history[0]).slice(0, 60)}”, saved ${draftHistoryAge(history[0].savedAt)}${history.length > 1 ? `, and ${history.length - 1} more` : ""}`;
+  openHistory.hidden = false;
+}).catch(() => {});
+
+openHistory.onclick = async () => {
+  const response = await ext.runtime.sendMessage({ type: "OPEN_CROSSPOST_COMPOSER", fresh: true, showHistory: true }).catch(() => null);
   if (response?.ok) window.close();
 };
 

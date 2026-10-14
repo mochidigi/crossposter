@@ -5,12 +5,13 @@ export function crosspostSessionIdFromUrl(url = "") {
   catch { return ""; }
 }
 
-export function crosspostComposerUrl(baseUrl, sessionId, fresh = false, showOnboarding = false, showSettings = false) {
+export function crosspostComposerUrl(baseUrl, sessionId, fresh = false, showOnboarding = false, showSettings = false, showHistory = false) {
   const url = new URL(baseUrl);
   url.searchParams.set("session", sessionId);
   if (fresh) url.searchParams.set("mode", "fresh");
   if (showOnboarding) url.searchParams.set("onboarding", "1");
   if (showSettings) url.searchParams.set("settings", "1");
+  if (showHistory) url.searchParams.set("history", "1");
   return url.href;
 }
 

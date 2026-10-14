@@ -55,10 +55,10 @@ ext.tabs.onCreated?.addListener(tab => {
   if ([tab.url, tab.pendingUrl].some(url => String(url || "").startsWith(ext.runtime.getURL("compose.html")))) return;
   setTabSidePanelEnabled(tab.id, false).catch(() => {});
 });
-ext.tabs.onRemoved?.addListener(tabId => {
+ext.tabs.onRemoved?.addListener((tabId, removeInfo) => {
   forgetNativeSidePanelTab(tabId);
   linkedInVideoRequests.delete(tabId);
-  removeTabFromCrosspostSessions(tabId).catch(() => {});
+  removeTabFromCrosspostSessions(tabId, { keepComposer: removeInfo?.isWindowClosing === true }).catch(() => {});
 });
 ext.tabs.onActivated?.addListener(activeInfo => noteActiveCrosspostTab(activeInfo).catch(() => {}));
 ext.sidePanel?.onClosed?.addListener(info => closeComposerTabsForPanel(info, false).catch(() => {}));
@@ -498,8 +498,18 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === "OPEN_CROSSPOST_COMPOSER") {
-    openCrosspostComposer(createDraft(message.draft || {}), { fresh: message.fresh === true, showOnboarding: message.showOnboarding === true, showSettings: message.showSettings === true, windowId: sender.tab?.windowId, openerTabId: sender.tab?.id })
+    openCrosspostComposer(createDraft(message.draft || {}), { fresh: message.fresh === true, showOnboarding: message.showOnboarding === true, showSettings: message.showSettings === true, showHistory: message.showHistory === true, windowId: sender.tab?.windowId, openerTabId: sender.tab?.id })
       .then(session => sendResponse({ ok: true, sessionId: session.id, tabId: session.sourceTabId, tabGroupId: session.groupId }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+  if (message?.type === "ADOPT_CROSSPOST_COMPOSER") {
+    if (!String(sender.url || "").startsWith(ext.runtime.getURL("compose.html"))) {
+      sendResponse({ ok: false, error: "Only a Compose tab can start a crosspost session." });
+      return;
+    }
+    adoptCrosspostComposer(message.sessionId, sender.tab)
+      .then(session => sendResponse({ ok: true, session }))
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
@@ -929,7 +939,7 @@ async function composerTabPlacement(openerTabId, windowId) {
   }
 }
 
-async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboarding = false, showSettings = false, windowId, openerTabId, pendingVideoResolution = null } = {}) {
+async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboarding = false, showSettings = false, showHistory = false, windowId, openerTabId, pendingVideoResolution = null } = {}) {
   await backgroundStateReady.catch(() => {});
   const draft = createDraft(draftInput);
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -950,7 +960,7 @@ async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboa
   crosspostSessions.set(id, session);
   await persistCrosspostSessions();
   try {
-    const url = crosspostComposerUrl(ext.runtime.getURL("compose.html"), id, fresh, showOnboarding, showSettings);
+    const url = crosspostComposerUrl(ext.runtime.getURL("compose.html"), id, fresh, showOnboarding, showSettings, showHistory);
     const placement = await composerTabPlacement(openerTabId, windowId);
     const tab = await ext.tabs.create({ url, active: true, ...(Number.isInteger(windowId) ? { windowId } : {}), ...placement });
     session.windowId = tab.windowId;
@@ -978,6 +988,37 @@ async function requireCrosspostSession(sessionId, tabId) {
   const direct = crosspostSessions.get(sessionId);
   const session = direct || sessionForTab([...crosspostSessions.values()], tabId);
   if (!session) throw new Error("This crosspost session is no longer available. Open a new Compose window.");
+  return session;
+}
+
+// Gives a Compose tab whose session is gone a new, empty one under its old id.
+// Reloading or updating the extension clears session storage (Firefox
+// temporary add-ons included), and a Compose left open from before would
+// otherwise fail at every step. Its draft lived only in that storage, so the
+// page points to draft history instead.
+async function adoptCrosspostComposer(sessionId, tab) {
+  await backgroundStateReady.catch(() => {});
+  if (!sessionId || !Number.isInteger(tab?.id)) throw new Error("This Compose tab cannot start a crosspost session.");
+  const existing = crosspostSessions.get(sessionId) || sessionForTab([...crosspostSessions.values()], tab.id);
+  if (existing) return existing;
+  const session = {
+    id: String(sessionId),
+    draft: createDraft({}),
+    fresh: true,
+    windowId: tab.windowId,
+    groupId: null,
+    sourceTabId: tab.id,
+    tabIds: [tab.id],
+    lastActiveTabId: tab.id,
+    pendingVideoResolution: null,
+    handoff: { state: "idle", text: "", media: [], networks: [] },
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  crosspostSessions.set(session.id, session);
+  await persistCrosspostSessions();
+  session.groupId = await groupComposerTabs([tab.id], tab.groupId).catch(() => null);
+  await persistCrosspostSessions(); notifyTray();
   return session;
 }
 
@@ -1578,10 +1619,11 @@ async function restoreCrosspostSessions() {
   await persistCrosspostSessions();
 }
 
-async function removeTabFromCrosspostSessions(tabId) {
+async function removeTabFromCrosspostSessions(tabId, { keepComposer = false } = {}) {
   await backgroundStateReady.catch(() => {});
   const session = sessionForTab([...crosspostSessions.values()], tabId);
   if (!session) return;
+  const destinationClosed = tabId !== session.sourceTabId;
   session.tabIds = (session.tabIds || []).filter(id => id !== tabId);
   if (session.sourceTabId === tabId) session.sourceTabId = null;
   // A destination whose tab is closed (its row's × or the tab strip) shows
@@ -1594,6 +1636,19 @@ async function removeTabFromCrosspostSessions(tabId) {
   if (!session.tabIds.length) crosspostSessions.delete(session.id);
   else session.updatedAt = Date.now();
   await persistCrosspostSessions(); notifyTray();
+  if (destinationClosed && !keepComposer) await closeComposerAfterLastDestination(session);
+}
+
+// Closing a finished crosspost's last destination tab (from the tab strip,
+// the sidebar, or Compose's own list) closes Compose too, so the group goes
+// with its last tab. The draft stays in history. A crosspost still filling,
+// and a group the user has added other tabs to, keep Compose open.
+async function closeComposerAfterLastDestination(session) {
+  const composerTabId = session.sourceTabId;
+  if (!crosspostSessions.has(session.id) || !Number.isInteger(composerTabId)) return;
+  if (!["ready", "error"].includes(session.handoff?.state) || session.handoff.retrying) return;
+  if ((await tabsForCrosspostSession(session)).some(id => id !== composerTabId)) return;
+  await closeCrosspostSession(session.id);
 }
 
 async function tabsForCrosspostSession(session) {

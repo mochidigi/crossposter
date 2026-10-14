@@ -31,6 +31,24 @@ export function draftHistoryEntry(draft = {}, media = [], savedAt = Date.now()) 
   };
 }
 
+// The one-line label a saved crosspost goes by in history lists and notices.
+export function draftHistoryPreview(entry) {
+  const item = entry?.draft || {};
+  return String(item.text || "").replace(/\s+/g, " ").trim() || (item.media?.length ? "Media post" : "Untitled draft");
+}
+
+// "5 minutes ago", "yesterday". English like the rest of Crossposter's UI, so
+// it never reads as a mix of languages inside an English sentence.
+export function draftHistoryAge(savedAt, now = Date.now()) {
+  const format = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  const minutes = Math.min(0, Math.round((Number(savedAt) - now) / 60000)) || 0;
+  if (!minutes) return "just now";
+  if (minutes > -60) return format.format(minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (hours > -24) return format.format(hours, "hour");
+  return format.format(Math.round(hours / 24), "day");
+}
+
 export function upsertDraftHistory(history, entry, maximum = MAX_DRAFT_HISTORY) {
   const previous = Array.isArray(history) ? history : [];
   const replaced = previous.find(item => item?.id === entry.id);

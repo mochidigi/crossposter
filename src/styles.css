@@ -58,7 +58,9 @@ a { color: inherit; }
   background: var(--surface);
 }
 
-.composer-head { margin-bottom: 18px; }
+.composer-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.icon-button.history-hint { flex: 0 0 auto; border-color: transparent; color: var(--text-muted); background: transparent; }
+.icon-button.history-hint:hover, .icon-button.history-hint:focus-visible { border-color: var(--line); color: var(--ink); background: transparent; }
 .composer-card h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -.04em; line-height: 1.1; }
 .composer-card .lede { margin: 0; color: var(--text-muted); font-size: 14px; }
 .publish-card h2 { margin: 0 0 14px; font-size: 22px; letter-spacing: -.035em; }
