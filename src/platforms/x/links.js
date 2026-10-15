@@ -37,25 +37,37 @@ export function tweetIdFromUrl(url = "") {
   return String(url).match(/\/status\/(\d+)/)?.[1] || "";
 }
 
-// Resolves the t.co links of a captured tweet through X's own syndication
-// endpoint (the same one the video downloader uses) so the draft carries the
-// real destination URLs. Any failure leaves the t.co links in place; they
-// still redirect when posted elsewhere.
-export async function expandTweetLinks(captured = {}, fetcher = fetch, { timeoutMs = 4000 } = {}) {
-  const links = Array.isArray(captured.links) ? captured.links : [];
-  const text = String(captured.text || "");
-  if (!links.some(link => isShortLink(link?.url)) && !isShortLink(text.match(/https?:\/\/t\.co\/\S+/)?.[0])) return captured;
-  const tweetId = tweetIdFromUrl(captured.sourceUrl);
-  if (!tweetId) return captured;
-  let map;
+async function fetchTweetLinks(tweetId, fetcher, timeoutMs) {
+  if (!tweetId) return new Map();
   try {
     const url = `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}&lang=en&token=${syndicationToken(tweetId)}`;
     const signal = typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(timeoutMs) : undefined;
     const response = await fetcher(url, { credentials: "omit", signal });
-    if (!response?.ok) return captured;
-    map = parseTweetLinks(await response.json());
+    return response?.ok ? parseTweetLinks(await response.json()) : new Map();
   } catch {
-    return captured;
+    return new Map();
+  }
+}
+
+const withoutWww = url => url.replace(/^(https?:\/\/)www\./i, "$1");
+
+// Resolves the t.co links of a captured tweet through X's own syndication
+// endpoint (the same one the video downloader uses) so the draft carries the
+// real destination URLs. A link it does not list falls back to the URL the
+// page showed for it (`expandedUrl`, inline links only), which lacks "www.";
+// that is restored when the payload holds the same URL under another t.co
+// code (a long post's opening links). Anything left keeps its t.co URL,
+// which still redirects when posted elsewhere.
+export async function expandTweetLinks(captured = {}, fetcher = fetch, { timeoutMs = 4000 } = {}) {
+  const links = Array.isArray(captured.links) ? captured.links : [];
+  const text = String(captured.text || "");
+  if (!links.some(link => isShortLink(link?.url)) && !isShortLink(text.match(/https?:\/\/t\.co\/\S+/)?.[0])) return captured;
+  const map = await fetchTweetLinks(tweetIdFromUrl(captured.sourceUrl), fetcher, timeoutMs);
+  const listed = new Map([...map.values()].map(url => [withoutWww(url), url]));
+  for (const link of links) {
+    const key = shortLinkKey(link?.url);
+    const shown = String(link?.expandedUrl || "").trim();
+    if (key && !map.has(key) && /^https?:\/\/\S+$/i.test(shown)) map.set(key, listed.get(withoutWww(shown)) || shown);
   }
   if (!map.size) return captured;
   return {

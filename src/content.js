@@ -1,8 +1,8 @@
 (() => {
-  const runtime = (globalThis.browser ?? globalThis.chrome).runtime;
+  const runtime = globalThis.browser.runtime;
   // Each store ships its own build, and only the Firefox manifest declares
-  // gecko settings. Chrome has also defined `browser` in content scripts
-  // since Chrome 148, so that global no longer identifies Firefox.
+  // gecko settings. Chrome defines `browser` too (since 148, the minimum),
+  // so that global does not identify Firefox.
   const isFirefoxBuild = (() => {
     try { return Boolean(runtime.getManifest?.()?.browser_specific_settings?.gecko); }
     catch { return false; }
@@ -797,34 +797,25 @@
     const match = String(item.dataUrl || "").match(/^data:([^;,]*)(;base64)?,(.*)$/s);
     if (!match) throw new Error("A media item could not be transferred.");
     const type = item.type || match[1] || "application/octet-stream";
-    const binary = match[2] ? atob(match[3]) : decodeURIComponent(match[3]);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    const bytes = match[2] ? Uint8Array.fromBase64(match[3]) : new TextEncoder().encode(decodeURIComponent(match[3]));
     return new File([bytes], item.name || "crossposter-media", { type, lastModified: item.lastModified || Date.now() });
   }
 
+  // Stored media arrives as the Blob itself (see GET_HANDOFF_MEDIA in the
+  // background), however large.
   async function handoffFiles(media) {
     const files = [];
     for (const item of media) {
       if (item.dataUrl) { files.push(dataUrlToFile(item)); continue; }
       if (!item.mediaId) throw new Error("A handoff media item is missing its storage reference.");
-      const chunks = [];
-      let offset = 0, totalSize = Number(item.size) || 0;
-      do {
-        const response = await runtime.sendMessage({ type: "GET_HANDOFF_MEDIA_CHUNK", mediaId: item.mediaId, offset, length: 2 * 1024 * 1024 });
-        if (!response?.ok) throw new Error(response?.error || "A stored media item could not be transferred.");
-        totalSize = Number(response.totalSize);
-        const binary = atob(response.data || ""), bytes = new Uint8Array(binary.length);
-        for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-        if (bytes.byteLength !== Number(response.byteLength) || (!bytes.byteLength && offset < totalSize)) {
-          throw new Error("A stored media transfer was incomplete.");
-        }
-        chunks.push(bytes); offset += bytes.byteLength;
-        if (response.done) break;
-      } while (offset < totalSize);
-      if (offset !== totalSize) throw new Error("A stored media transfer was incomplete.");
-      files.push(new File(chunks, item.name || "crossposter-media", {
-        type: item.type || "application/octet-stream", lastModified: item.lastModified || Date.now()
+      const response = await runtime.sendMessage({ type: "GET_HANDOFF_MEDIA", mediaId: item.mediaId });
+      if (!response?.ok) throw new Error(response?.error || "A stored media item could not be transferred.");
+      const { blob } = response;
+      if (typeof blob?.arrayBuffer !== "function" || (Number(item.size) > 0 && blob.size !== Number(item.size))) {
+        throw new Error("A stored media transfer was incomplete.");
+      }
+      files.push(new File([blob], item.name || "crossposter-media", {
+        type: item.type || blob.type || "application/octet-stream", lastModified: item.lastModified || Date.now()
       }));
     }
     return files;
@@ -832,7 +823,7 @@
 
   function reportComposerStage(handoffId, network, stage) {
     if (!handoffId) return;
-    try { runtime.sendMessage({ type: "NATIVE_COMPOSER_STAGE", handoffId, network, stage })?.catch?.(() => {}); }
+    try { runtime.sendMessage({ type: "NATIVE_COMPOSER_STAGE", handoffId, network, stage }).catch(() => {}); }
     catch {}
   }
 
@@ -882,8 +873,9 @@
 
   runtime.onMessage.addListener(listener);
   try {
-    const statusRequest = runtime.sendMessage?.({ type: "GET_NATIVE_TAB_STATUS" });
-    statusRequest?.then?.(response => { if (response?.posted) markPagePosted(); }).catch?.(() => {});
+    runtime.sendMessage({ type: "GET_NATIVE_TAB_STATUS" })
+      .then(response => { if (response?.posted) markPagePosted(); })
+      .catch(() => {});
   } catch {}
   globalThis.CrossposterContent = {
     register,

@@ -7,7 +7,7 @@ import { NATIVE_DESTINATIONS, destinationUrl, nativeDestination } from "./shared
 import { COMPOSER_DELIVERY_RETRY_MS, COMPOSER_DELIVERY_TIMEOUT_MS, COMPOSER_GROUP_APPEARANCE, composerTabProperties, isMissingContentScriptError, isSidePanelUnavailableError, isTabGroupingUnsupportedError, settleWithin, shouldRetryCanonicalComposer, shouldRetryComposerDelivery, shouldRetryMediaAttachment, shouldRetryTextInsertion, selectComposerFrame } from "./shared/handoff.js";
 import { chooseContextMedia } from "./shared/capture.js";
 import { expandCapturedLinks } from "./shared/links.js";
-import { clearHandoffMedia, deleteHandoffMedia, listHandoffMediaRecords, readHandoffMediaChunk } from "./shared/media-store.js";
+import { clearHandoffMedia, deleteHandoffMedia, getHandoffMedia, listHandoffMediaRecords } from "./shared/media-store.js";
 import { DRAFT_HISTORY_KEY, expireDraftHistory } from "./shared/draft-history.js";
 import { referencedMediaIds, unreferencedMediaIds } from "./shared/retention.js";
 import { contentScriptFilesForUrl, HANDOFF_OVERLAY_SCRIPT, PLATFORM_CONTENT_SCRIPTS, platformContentScriptForUrl, platformDocumentUrlPatterns, platformOriginsForIds, registeredPlatformContentScripts } from "./shared/content-scripts.js";
@@ -30,7 +30,6 @@ const nativeSidePanelWindows = new Set();
 const pendingNativeTabWindows = new Map();
 const crosspostSessions = new Map();
 const NATIVE_SIDE_PANEL_TABS_KEY = "crossposterNativeSidePanelTabs";
-const nativeSessionStorage = ext.storage.session || ext.storage.local;
 let nativeSidePanelStorageQueue = Promise.resolve();
 let crosspostSessionStorageQueue = Promise.resolve();
 let platformContentScriptSyncQueue = Promise.resolve();
@@ -44,7 +43,7 @@ const TAB_GROUP_TIMEOUT_ERROR = "This browser did not respond to tab grouping.";
 // this worker, so each Compose does not wait out the timeout again.
 const TAB_GROUPS_UNSUPPORTED_KEY = "crossposterTabGroupsUnsupported";
 let tabGroupsUnsupported = false;
-const tabGroupSupportReady = (ext.storage.session?.get(TAB_GROUPS_UNSUPPORTED_KEY) || Promise.resolve({}))
+const tabGroupSupportReady = ext.storage.session.get(TAB_GROUPS_UNSUPPORTED_KEY)
   .then(stored => { if (stored?.[TAB_GROUPS_UNSUPPORTED_KEY] === true) tabGroupsUnsupported = true; })
   .catch(() => {});
 const linkedInVideoRequests = new Map();
@@ -445,182 +444,100 @@ async function broadcastInlineActionPreference(enabled) {
   }));
 }
 
-ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === "GET_HANDOFF_OVERLAY") {
-    handoffOverlayState(sender.tab?.id).then(sendResponse).catch(() => sendResponse({ active: false }));
-    return true;
-  }
-  if (message?.type === "NATIVE_COMPOSER_STAGE") {
-    updateComposerStage(message, sender.tab?.id).then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: false }));
-    return true;
-  }
-  if (message?.type === "GET_PLATFORM_PREFERENCES") {
-    readPlatformPreferences().then(preferences => sendResponse({ ok: true, ...preferences })).catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "APPLY_PLATFORM_PREFERENCES") {
-    applyPlatformPreferences(message).then(preferences => sendResponse({ ok: true, ...preferences })).catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "OPEN_CAPTURED_POST") {
+// Messages from Compose, the sidebar, the popup, and content scripts. Each
+// handler gets (message, sender) and returns its response, or a promise of
+// it; one that throws or rejects answers { ok: false, error }. Handlers run
+// synchronously inside the listener, so a browser that ties an API to the
+// sender's click (sidePanel.open) still sees it.
+const messageHandlers = {
+  GET_HANDOFF_OVERLAY: (message, sender) => handoffOverlayState(sender.tab?.id).catch(() => ({ active: false })),
+  NATIVE_COMPOSER_STAGE: (message, sender) => updateComposerStage(message, sender.tab?.id).then(() => ({ ok: true }), () => ({ ok: false })),
+  GET_PLATFORM_PREFERENCES: async () => ({ ok: true, ...await readPlatformPreferences() }),
+  APPLY_PLATFORM_PREFERENCES: async message => ({ ok: true, ...await applyPlatformPreferences(message) }),
+  OPEN_CAPTURED_POST: async (message, sender) => {
     const captured = message.draft || {};
     const media = Array.isArray(captured.media) ? captured.media : [];
     const videoHint = media.some(item => item.kind === "video")
       ? resolvedLinkedInVideoHint(sender.tab?.id, message.videoHint || {}, sender.frameId)
       : null;
-    openCapturedPost({ ...captured, media }, videoHint, { windowId: sender.tab?.windowId, openerTabId: sender.tab?.id })
-      .then(session => sendResponse({ ok: true, sessionId: session.id, deferred: session.deferred === true }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "RESUME_PENDING_CAPTURE") {
-    resumePendingCapture(String(message.token || ""), sender.tab?.id)
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "CANCEL_PENDING_CAPTURE") {
-    cancelPendingCapture(String(message.token || ""))
-      .then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: true }));
-    return true;
-  }
-  if (message?.type === "NATIVE_TRAY_CLOSED") {
+    const session = await openCapturedPost({ ...captured, media }, videoHint, { windowId: sender.tab?.windowId, openerTabId: sender.tab?.id });
+    return { ok: true, sessionId: session.id, deferred: session.deferred === true };
+  },
+  RESUME_PENDING_CAPTURE: (message, sender) => resumePendingCapture(String(message.token || ""), sender.tab?.id),
+  CANCEL_PENDING_CAPTURE: message => cancelPendingCapture(String(message.token || "")).catch(() => {}).then(() => ({ ok: true })),
+  NATIVE_TRAY_CLOSED: message => {
     closeComposerTabsForPanel({ path: "tray.html", windowId: message.windowId }, true).catch(() => {});
-    sendResponse({ ok: true });
-    return;
-  }
-  if (message?.type === "OPEN_SITE_ACCESS_PAGE") {
-    openSiteAccessPage()
-      .then(tab => sendResponse({ ok: true, tabId: tab?.id }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "OPEN_CROSSPOST_COMPOSER") {
-    openCrosspostComposer(createDraft(message.draft || {}), { fresh: message.fresh === true, showOnboarding: message.showOnboarding === true, showSettings: message.showSettings === true, showHistory: message.showHistory === true, windowId: sender.tab?.windowId, openerTabId: sender.tab?.id })
-      .then(session => sendResponse({ ok: true, sessionId: session.id, tabId: session.sourceTabId, tabGroupId: session.groupId }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "ADOPT_CROSSPOST_COMPOSER") {
-    if (!String(sender.url || "").startsWith(ext.runtime.getURL("compose.html"))) {
-      sendResponse({ ok: false, error: "Only a Compose tab can start a crosspost session." });
-      return;
-    }
-    adoptCrosspostComposer(message.sessionId, sender.tab)
-      .then(session => sendResponse({ ok: true, session }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "GET_CROSSPOST_SESSION") {
-    getCrosspostSession(message.sessionId)
-      .then(session => sendResponse({ ok: Boolean(session), session }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "REGISTER_NATIVE_TRAY_TAB") {
-    if (!scopedSidePanel || !Number.isInteger(sender.tab?.id)) {
-      sendResponse({ ok: true });
-      return;
-    }
-    registerCrosspostComposer(message.sessionId, sender.tab)
-      .then(session => prepareNativeSidePanelWindow(sender.tab).then(() => session))
-      .then(session => sendResponse({ ok: true, sessionId: session?.id || message.sessionId || "" }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "SWEEP_STORED_DATA") {
-    sweepStoredData()
-      .then(() => sendResponse({ ok: true }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "GET_HANDOFF_MEDIA_CHUNK") {
-    readHandoffMediaChunk(message.mediaId, message.offset, message.length)
-      .then(chunk => sendResponse({ ok: true, ...chunk }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "GET_NATIVE_TAB_STATUS") {
-    nativeTabPostStatus(sender.tab?.id)
-      .then(posted => sendResponse({ ok: true, posted }))
-      .catch(() => sendResponse({ ok: true, posted: false }));
-    return true;
-  }
-  if (message?.type === "NATIVE_POST_CONFIRMED") {
-    markNativePostForTab(sender.tab?.id, message.network, "composer-dismissed-v1")
-      .then(posted => sendResponse({ ok: true, posted }))
-      .catch(error => sendResponse({ ok: false, posted: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "GET_CROSSPOST_SESSIONS" || message?.type === "GET_NATIVE_HANDOFF") {
-    crosspostSessionPayload(message.windowId)
-      .then(payload => sendResponse({ ok: true, ...payload, handoff: payload.sessions.find(item => item.id === payload.activeSessionId)?.handoff || { state: "idle" } }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "RESUME_CAPTURED_VIDEO") {
-    resumeCapturedVideoResolution(message.sessionId, sender.tab?.id)
-      .then(result => sendResponse({ ok: true, ...result }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "ACTIVATE_CROSSPOST_SESSION") {
-    activateCrosspostSession(message.sessionId)
-      .then(tab => sendResponse({ ok: true, tabId: tab?.id }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "CLOSE_CROSSPOST_SESSION") {
-    closeCrosspostSession(message.sessionId)
-      .then(() => sendResponse({ ok: true }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "RETRY_NATIVE_HANDOFF") {
-    retryNativeHandoff(message.sessionId, message.network)
-      .then(result => sendResponse({ ok: true, ...result }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "CANCEL_NATIVE_HANDOFF") {
-    cancelNativeHandoff(message.sessionId, message.attemptId)
-      .then(closedTabs => sendResponse({ ok: true, closedTabs }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "CLEAR_ALL_CROSSPOSTER_DATA") {
-    clearAllCrossposterData(message.sessionId, sender.tab)
-      .then(closedTabs => sendResponse({ ok: true, closedTabs }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "OPEN_NATIVE_TRAY") {
+    return { ok: true };
+  },
+  OPEN_SITE_ACCESS_PAGE: async () => ({ ok: true, tabId: (await openSiteAccessPage())?.id }),
+  OPEN_CROSSPOST_COMPOSER: async (message, sender) => {
+    const session = await openCrosspostComposer(createDraft(message.draft || {}), { fresh: message.fresh === true, showOnboarding: message.showOnboarding === true, showSettings: message.showSettings === true, showHistory: message.showHistory === true, windowId: sender.tab?.windowId, openerTabId: sender.tab?.id });
+    return { ok: true, sessionId: session.id, tabId: session.sourceTabId, tabGroupId: session.groupId };
+  },
+  ADOPT_CROSSPOST_COMPOSER: async (message, sender) => {
+    if (!String(sender.url || "").startsWith(ext.runtime.getURL("compose.html"))) throw new Error("Only a Compose tab can start a crosspost session.");
+    return { ok: true, session: await adoptCrosspostComposer(message.sessionId, sender.tab) };
+  },
+  GET_CROSSPOST_SESSION: async message => {
+    const session = await getCrosspostSession(message.sessionId);
+    return { ok: Boolean(session), session };
+  },
+  REGISTER_NATIVE_TRAY_TAB: async (message, sender) => {
+    if (!scopedSidePanel || !Number.isInteger(sender.tab?.id)) return { ok: true };
+    const session = await registerCrosspostComposer(message.sessionId, sender.tab);
+    await prepareNativeSidePanelWindow(sender.tab);
+    return { ok: true, sessionId: session?.id || message.sessionId || "" };
+  },
+  SWEEP_STORED_DATA: async () => { await sweepStoredData(); return { ok: true }; },
+  // The stored Blob itself: messages are structured-cloned (Firefox always,
+  // Chrome through the manifest's message_serialization), and Chrome doesn't
+  // count a Blob against its 64 MiB message limit.
+  GET_HANDOFF_MEDIA: async message => {
+    const record = await getHandoffMedia(message.mediaId);
+    if (!record?.blob) throw new Error("This handoff media is no longer available.");
+    return { ok: true, blob: record.blob };
+  },
+  GET_NATIVE_TAB_STATUS: (message, sender) => nativeTabPostStatus(sender.tab?.id).catch(() => false).then(posted => ({ ok: true, posted })),
+  NATIVE_POST_CONFIRMED: (message, sender) => markNativePostForTab(sender.tab?.id, message.network, "composer-dismissed-v1")
+    .then(posted => ({ ok: true, posted }), error => ({ ok: false, posted: false, error: errorMessage(error) })),
+  GET_CROSSPOST_SESSIONS: async message => {
+    const payload = await crosspostSessionPayload(message.windowId);
+    return { ok: true, ...payload, handoff: payload.sessions.find(item => item.id === payload.activeSessionId)?.handoff || { state: "idle" } };
+  },
+  RESUME_CAPTURED_VIDEO: async (message, sender) => ({ ok: true, ...await resumeCapturedVideoResolution(message.sessionId, sender.tab?.id) }),
+  ACTIVATE_CROSSPOST_SESSION: async message => ({ ok: true, tabId: (await activateCrosspostSession(message.sessionId))?.id }),
+  CLOSE_CROSSPOST_SESSION: async message => { await closeCrosspostSession(message.sessionId); return { ok: true }; },
+  RETRY_NATIVE_HANDOFF: async message => ({ ok: true, ...await retryNativeHandoff(message.sessionId, message.network) }),
+  CANCEL_NATIVE_HANDOFF: async message => ({ ok: true, closedTabs: await cancelNativeHandoff(message.sessionId, message.attemptId) }),
+  CLEAR_ALL_CROSSPOSTER_DATA: async (message, sender) => ({ ok: true, closedTabs: await clearAllCrossposterData(message.sessionId, sender.tab) }),
+  OPEN_NATIVE_TRAY: (message, sender) => {
     // sidePanel.open() must be invoked synchronously while Chrome still carries
     // the Compose button's user activation through this message handler.
     const surface = openTraySurface(sender);
-    Promise.all([
+    return Promise.all([
       surface,
       prepareCrosspostHandoff(message.sessionId, message.attemptId, message.text, message.networks, sender.tab)
-    ])
-      .then(([openedSurface]) => sendResponse({ ok: true, surface: openedSurface }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
-  if (message?.type === "OPEN_NATIVE_HANDOFF") {
-    openNativeHandoffs(message.sessionId, message.attemptId, message.networks, message.handoff, sender.tab?.windowId, sender.tab?.id)
-      .then(result => sendResponse({ ok: true, ...result }))
-      .catch(error => markCrosspostError(message.sessionId, error, message.attemptId).then(message => sendResponse({ ok: false, error: message })));
-    return true;
-  }
-  if (message?.type === "OPEN_FEEDBACK") {
-    openFeedbackForm(message, sender)
-      .then(result => sendResponse({ ok: true, ...result }))
-      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
-    return true;
-  }
+    ]).then(([openedSurface]) => ({ ok: true, surface: openedSurface }));
+  },
+  OPEN_NATIVE_HANDOFF: (message, sender) => openNativeHandoffs(message.sessionId, message.attemptId, message.networks, message.handoff, sender.tab?.windowId, sender.tab?.id)
+    .then(result => ({ ok: true, ...result }), async error => ({ ok: false, error: await markCrosspostError(message.sessionId, error, message.attemptId) })),
+  OPEN_FEEDBACK: async (message, sender) => ({ ok: true, ...await openFeedbackForm(message, sender) })
+};
+messageHandlers.GET_NATIVE_HANDOFF = messageHandlers.GET_CROSSPOST_SESSIONS;
+
+ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const handler = Object.hasOwn(messageHandlers, message?.type) ? messageHandlers[message.type] : null;
+  if (!handler) return;
+  let response;
+  try { response = handler(message, sender); }
+  catch (error) { response = Promise.reject(error); }
+  Promise.resolve(response).catch(error => ({ ok: false, error: errorMessage(error) })).then(sendResponse);
+  return true;
 });
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
 
 // Opens Crossposter's feedback form (feedback.html) with a report of what
 // went wrong. The report stays in the browser (storage.session); the form
@@ -641,7 +558,7 @@ async function openFeedbackForm(message, sender) {
     try {
       diagnostics = await collectPageDiagnostics(entry.tabId, entry.result?.frameId, { snapshot: true, signInPattern: SIGN_IN_PATH.source });
       if (!diagnostics?.snapshot) diagnosticsError = "The page returned no outline.";
-    } catch (error) { diagnosticsError = error instanceof Error ? error.message : String(error); }
+    } catch (error) { diagnosticsError = errorMessage(error); }
   }
   const { enabledPlatforms } = await readPlatformPreferences().catch(() => ({}));
   const report = buildFeedbackReport({
@@ -649,7 +566,7 @@ async function openFeedbackForm(message, sender) {
     manifest: ext.runtime.getManifest(), userAgent: navigator.userAgent, language: navigator.language,
     enabledPlatforms, session, network, diagnostics, diagnosticsError
   });
-  const reportId = await storeFeedbackReport(nativeSessionStorage, report);
+  const reportId = await storeFeedbackReport(ext.storage.session, report);
   if (message.overlay === true) return { reportId };
   const windowId = sender.tab?.windowId ?? message.windowId;
   const url = `${ext.runtime.getURL("feedback.html")}?report=${encodeURIComponent(reportId)}`;
@@ -683,11 +600,11 @@ async function collectPageDiagnostics(tabId, frameId, options) {
   let frameError = "";
   if (Number.isInteger(frameId) && frameId > 0) {
     try { return await run({ tabId, frameIds: [frameId] }); }
-    catch (error) { frameError = error instanceof Error ? error.message : String(error); }
+    catch (error) { frameError = errorMessage(error); }
   }
   try { return await run({ tabId }); }
   catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     throw new Error(frameError ? `Composer frame: ${frameError} Page: ${message}` : message);
   }
 }
@@ -774,8 +691,7 @@ async function resolvedLinkedInVideoHint(tabId, hint = {}, frameId) {
 async function handleLinkedInPublishCompleted(candidate) {
   const marked = await markNativePostForTab(candidate.tabId, "linkedin", "linkedin-publish-response-v1");
   if (!marked) return false;
-  const sent = ext.tabs.sendMessage(candidate.tabId, { type: "MARK_NATIVE_POSTED" });
-  sent?.catch?.(() => {});
+  ext.tabs.sendMessage(candidate.tabId, { type: "MARK_NATIVE_POSTED" }).catch(() => {});
   return true;
 }
 
@@ -787,12 +703,12 @@ function pruneLinkedInCandidates() {
 const PENDING_CAPTURES_KEY = "crossposterPendingCaptures";
 
 async function readPendingCaptures() {
-  const stored = await nativeSessionStorage.get(PENDING_CAPTURES_KEY);
+  const stored = await ext.storage.session.get(PENDING_CAPTURES_KEY);
   return stored[PENDING_CAPTURES_KEY] && typeof stored[PENDING_CAPTURES_KEY] === "object" ? stored[PENDING_CAPTURES_KEY] : {};
 }
 
 async function writePendingCaptures(pending) {
-  await nativeSessionStorage.set({ [PENDING_CAPTURES_KEY]: pending });
+  await ext.storage.session.set({ [PENDING_CAPTURES_KEY]: pending });
 }
 
 function sourceAccessPlatform(draft) {
@@ -803,7 +719,7 @@ function sourceAccessPlatform(draft) {
 // hosts before the composer exists, so it never opens with media it cannot
 // resolve. The page resumes the capture once access is granted.
 async function deferCaptureForSiteAccess(captured, videoHint, options, platformId) {
-  const token = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const token = crypto.randomUUID();
   const pending = await readPendingCaptures();
   const cutoff = Date.now() - 6 * 60 * 60 * 1000;
   for (const [key, entry] of Object.entries(pending)) if (!entry || entry.createdAt < cutoff) delete pending[key];
@@ -857,7 +773,7 @@ async function openCapturedPost(captured = {}, videoHint, options = {}) {
   if (!hasVideo) return openCrosspostComposer(createDraft({ ...captured, media }), options);
 
   const draft = createDraft({ ...captured, media });
-  const resolutionId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const resolutionId = crypto.randomUUID();
   const permissionsComplete = !(await incompletePlatformPermissions(ext.permissions, [draft.sourceNetwork])).length;
   const pendingVideoResolution = permissionsComplete ? null : {
     resolutionId,
@@ -911,14 +827,13 @@ async function settleCapturedVideo(sessionId, resolutionId, resolvedItem, error 
   session.updatedAt = Date.now();
   await persistCrosspostSessions();
   if (Number.isInteger(session.sourceTabId)) {
-    const sent = ext.runtime.sendMessage({
+    await ext.runtime.sendMessage({
       type: "CAPTURED_VIDEO_RESOLVED",
       sessionId,
       resolutionId,
       resolvedItem: resolvedItem || null,
       error
-    });
-    await sent?.catch?.(() => {});
+    }).catch(() => {});
   }
   notifyTray();
 }
@@ -942,7 +857,7 @@ async function composerTabPlacement(openerTabId, windowId) {
 async function openCrosspostComposer(draftInput = {}, { fresh = false, showOnboarding = false, showSettings = false, showHistory = false, windowId, openerTabId, pendingVideoResolution = null } = {}) {
   await backgroundStateReady.catch(() => {});
   const draft = createDraft(draftInput);
-  const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const id = crypto.randomUUID();
   const session = {
     id,
     draft,
@@ -1046,7 +961,7 @@ async function prepareCrosspostHandoff(sessionId, attemptId, text, networks, sou
 }
 
 async function markCrosspostError(sessionId, error, attemptId) {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   const session = crosspostSessions.get(sessionId);
   if (session && (!attemptId || session.handoff?.attemptId === attemptId)) {
     session.handoff = { ...(session.handoff || {}), state: "error", error: message };
@@ -1224,12 +1139,9 @@ function showHandoffOverlay(tabId) {
 
 function notifyTray() {
   syncHandoffOverlays();
-  try {
-    crosspostSessionPayload().then(payload => {
-      const sent = ext.runtime.sendMessage({ type: "CROSSPOST_SESSIONS_UPDATED", ...payload });
-      sent?.catch?.(() => {});
-    }).catch(() => {});
-  } catch {}
+  crosspostSessionPayload()
+    .then(payload => ext.runtime.sendMessage({ type: "CROSSPOST_SESSIONS_UPDATED", ...payload }))
+    .catch(() => {});
 }
 
 async function updateComposerStage(message, tabId) {
@@ -1264,7 +1176,7 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
   for (const target of targets) {
     if (!isCurrentHandoff(session.id, attemptId)) break;
     try { entries.push({ target, tab: await createNativeComposerTab(target, session, attemptId, sourceWindowId, sourceTabId) }); }
-    catch (error) { entries.push({ target, error: error instanceof Error ? error.message : String(error) }); }
+    catch (error) { entries.push({ target, error: errorMessage(error) }); }
   }
 
   if (!isCurrentHandoff(session.id, attemptId)) return { results: [], tabGroupId: session.groupId ?? null, groupError: "", cancelled: true };
@@ -1279,7 +1191,7 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
     tabGroupId = await groupComposerTabs(session.tabIds, session.groupId);
     session.groupId = tabGroupId;
   }
-  catch (error) { if (!tabGroupsUnsupported) groupError = error instanceof Error ? error.message : String(error); }
+  catch (error) { if (!tabGroupsUnsupported) groupError = errorMessage(error); }
 
   // The tabs above load at the same time in the background. Each destination
   // then fills in turn with its tab in front, covered by the overlay
@@ -1306,7 +1218,7 @@ async function openNativeHandoffs(sessionId, attemptId, networks, handoff, sourc
     await showHandoffOverlay(tab.id);
     let entry;
     try { entry = { network: target.id, ...await fillNativeComposer(target, tab, { ...handoff, handoffId: attemptId }) }; }
-    catch (caught) { entry = { network: target.id, tabId: tab.id, error: caught instanceof Error ? caught.message : String(caught), result: null }; }
+    catch (caught) { entry = { network: target.id, tabId: tab.id, error: errorMessage(caught), result: null }; }
     await settle(target, entry);
   };
   session.handoff = { ...session.handoff, tabGroupId, groupError };
@@ -1365,7 +1277,7 @@ async function retryNativeHandoff(sessionId, network) {
   try {
     entry = { network, ...await inFront(() => fillNativeComposer(target, tab, retryHandoff)) };
   }
-  catch (caught) { entry = { network, tabId: tab.id, error: caught instanceof Error ? caught.message : String(caught), result: null }; }
+  catch (caught) { entry = { network, tabId: tab.id, error: errorMessage(caught), result: null }; }
   await inFront.idle();
   if (!isCurrentHandoff(session.id, attemptId)) return { cancelled: true };
   const others = (session.handoff.results || []).filter(item => item.network !== network);
@@ -1400,7 +1312,7 @@ async function groupComposerTabs(tabIds, existingGroupId) {
 function markTabGroupsUnsupported() {
   if (tabGroupsUnsupported) return;
   tabGroupsUnsupported = true;
-  ext.storage.session?.set({ [TAB_GROUPS_UNSUPPORTED_KEY]: true }).catch(() => {});
+  ext.storage.session.set({ [TAB_GROUPS_UNSUPPORTED_KEY]: true }).catch(() => {});
 }
 
 function isCurrentHandoff(sessionId, attemptId) {
@@ -1445,7 +1357,7 @@ async function fillNativeComposer(target, initialTab, handoff) {
   let prefilled = link.prefilled;
   const deliver = async () => {
     try { return await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff: { ...handoff, inFront: true, prefilled } }); }
-    catch (error) { return { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
+    catch (error) { return { ok: true, composerOpened: false, textInserted: false, mediaInserted: 0, error: errorMessage(error) }; }
   };
   // A destination that loads in front (X in Chrome) opened blank and loads
   // now, once, with its tab visible. Otherwise the page loaded in the
@@ -1479,7 +1391,7 @@ async function fillNativeComposer(target, initialTab, handoff) {
       result = await sendComposerMessage(tab.id, { type: "OPEN_NATIVE_COMPOSER", network: target.id, handoff: retryHandoff });
       if (!retryHandoff.text && handoff.text) result = { ...result, textInserted: true };
     }
-    catch (error) { result = { ok: true, composerOpened: true, textInserted: firstResult.textInserted, mediaInserted: 0, error: error instanceof Error ? error.message : String(error) }; }
+    catch (error) { result = { ok: true, composerOpened: true, textInserted: firstResult.textInserted, mediaInserted: 0, error: errorMessage(error) }; }
   }
   if (!result?.ok) result = { ...result, textInserted: false, mediaInserted: 0 };
   if (result?.composerOpened === false && result.reason !== "signed-out" && await destinationLooksSignedOut(tab.id)) {
@@ -1568,12 +1480,12 @@ function persistNativeSidePanelTabs() {
   }]));
   nativeSidePanelStorageQueue = nativeSidePanelStorageQueue
     .catch(() => {})
-    .then(() => nativeSessionStorage.set({ [NATIVE_SIDE_PANEL_TABS_KEY]: snapshot }));
+    .then(() => ext.storage.session.set({ [NATIVE_SIDE_PANEL_TABS_KEY]: snapshot }));
   return nativeSidePanelStorageQueue;
 }
 
 async function restoreNativeSidePanelState() {
-  const stored = await nativeSessionStorage.get(NATIVE_SIDE_PANEL_TABS_KEY);
+  const stored = await ext.storage.session.get(NATIVE_SIDE_PANEL_TABS_KEY);
   const entries = Object.entries(stored[NATIVE_SIDE_PANEL_TABS_KEY] || {});
   for (const [tabIdValue, storedValue] of entries) {
     const tabId = Number(tabIdValue);
@@ -1594,12 +1506,12 @@ function persistCrosspostSessions() {
   const snapshot = [...crosspostSessions.values()];
   crosspostSessionStorageQueue = crosspostSessionStorageQueue
     .catch(() => {})
-    .then(() => nativeSessionStorage.set({ [CROSSPOST_SESSIONS_KEY]: snapshot }));
+    .then(() => ext.storage.session.set({ [CROSSPOST_SESSIONS_KEY]: snapshot }));
   return crosspostSessionStorageQueue;
 }
 
 async function restoreCrosspostSessions() {
-  const stored = await nativeSessionStorage.get(CROSSPOST_SESSIONS_KEY);
+  const stored = await ext.storage.session.get(CROSSPOST_SESSIONS_KEY);
   for (const candidate of stored[CROSSPOST_SESSIONS_KEY] || []) {
     if (!candidate?.id || !Array.isArray(candidate.tabIds)) continue;
     const tabs = [];
@@ -1700,7 +1612,7 @@ async function clearAllCrossposterData(sessionId, currentTab) {
   const tabsToClose = [...new Set([...sessionTabs, ...nativeSidePanelTabs.keys()])].filter(tabId => tabId !== currentTab.id);
   await clearHandoffMedia();
   await ext.storage.local.clear();
-  if (ext.storage.session && ext.storage.session !== ext.storage.local) await ext.storage.session.clear();
+  await ext.storage.session.clear();
   await synchronizePlatformContentScripts(normalizeEnabledPlatforms());
   await broadcastInlineActionPreference(true);
 

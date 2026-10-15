@@ -7,7 +7,7 @@ const LABELS = {
   idea: ["Your idea", "What would you like Crossposter to do?"],
   other: ["Your message", ""]
 };
-const storage = ext.storage.session || ext.storage.local;
+const storage = ext.storage.session;
 const manifest = ext.runtime.getManifest();
 const params = new URL(location.href).searchParams;
 const reportId = params.get("report") || "";

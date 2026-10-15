@@ -2,8 +2,6 @@ const DATABASE_NAME = "crossposter-handoff";
 const STORE_NAME = "media";
 const DATABASE_VERSION = 1;
 
-export const MEDIA_CHUNK_BYTES = 2 * 1024 * 1024;
-
 let databasePromise;
 
 function openDatabase() {
@@ -80,7 +78,7 @@ export async function listHandoffMediaRecords() {
 
 export async function storeHandoffMedia(blob, metadata = {}) {
   if (!blob || !Number(blob.size)) throw new Error("The downloaded media file was empty.");
-  const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const id = crypto.randomUUID();
   const record = {
     id,
     blob,
@@ -105,27 +103,4 @@ export async function getHandoffMedia(mediaId) {
   const database = await openDatabase();
   const transaction = database.transaction(STORE_NAME, "readonly");
   return requestResult(transaction.objectStore(STORE_NAME).get(mediaId));
-}
-
-export async function readHandoffMediaChunk(mediaId, offset = 0, requestedBytes = MEDIA_CHUNK_BYTES) {
-  const record = await getHandoffMedia(mediaId);
-  if (!record?.blob) throw new Error("This handoff media is no longer available.");
-  const start = Math.max(0, Math.min(Number(offset) || 0, record.blob.size));
-  const length = Math.max(1, Math.min(Number(requestedBytes) || MEDIA_CHUNK_BYTES, MEDIA_CHUNK_BYTES));
-  const end = Math.min(start + length, record.blob.size);
-  const bytes = new Uint8Array(await record.blob.slice(start, end).arrayBuffer());
-  return {
-    data: bytesToBase64(bytes),
-    byteLength: bytes.byteLength,
-    totalSize: record.blob.size,
-    done: end >= record.blob.size
-  };
-}
-
-export function bytesToBase64(bytes) {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  }
-  return btoa(binary);
 }

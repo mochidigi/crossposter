@@ -1,5 +1,18 @@
 import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// `node scripts/build.mjs firefox` builds one target: AMO's source rebuild
+// runs it as `build-for-amo`, so dist/ holds only the Firefox manifest folder
+// it should compare with the upload. Without an argument, and when
+// package.mjs imports this file, both targets are built.
+const TARGET_NAMES = { chrome: "Chrome", firefox: "Firefox" };
+const invokedDirectly = path.resolve(process.argv[1] || "") === fileURLToPath(import.meta.url);
+const requested = invokedDirectly ? process.argv.slice(2) : [];
+for (const target of requested) {
+  if (!Object.hasOwn(TARGET_NAMES, target)) throw new Error(`Unknown build target ${JSON.stringify(target)}; use chrome and/or firefox.`);
+}
+const targets = requested.length ? [...new Set(requested)] : Object.keys(TARGET_NAMES);
 
 // HLS downloads need the vendored ffmpeg.wasm runtime. Keep normal builds fast
 // by reusing an existing copy, but make a clean checkout self-contained by
@@ -26,7 +39,7 @@ if (!await hasFfmpegAssets()) {
 }
 
 await rm("dist", { recursive: true, force: true });
-for (const target of ["chrome", "firefox"]) {
+for (const target of targets) {
   const out = path.join("dist", target);
   const chromeOnlyExclusions = [
     path.resolve("src", "background.firefox.js"),
@@ -44,4 +57,4 @@ for (const target of ["chrome", "firefox"]) {
   });
   await writeFile(path.join(out, "manifest.json"), await readFile(`src/manifest.${target}.json`));
 }
-console.log("Built Chrome and Firefox extensions in dist/.");
+console.log(`Built ${targets.map(target => TARGET_NAMES[target]).join(" and ")} extension${targets.length > 1 ? "s" : ""} in dist/.`);

@@ -56,6 +56,13 @@ export async function resolveReshareMedia(media, hint, resolver = resolveDownloa
   return items;
 }
 
+// A file name the downloads API takes: no folders and none of the characters
+// Windows rejects; it refuses the whole download otherwise.
+export function safeDownloadName(name, fallback = "crossposter-media") {
+  const clean = String(name || "").replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "-").replace(/^[\s.]+|[\s.]+$/g, "");
+  return clean || fallback;
+}
+
 export function mediaDownloadDescriptor(item = {}) {
   if (item.kind !== "video" || !item.url) throw new Error("No downloadable video is available.");
   return {

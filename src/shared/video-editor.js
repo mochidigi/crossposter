@@ -1,7 +1,13 @@
 import { loadFfmpeg } from "./hls.js";
 
 export const MIN_CLIP_SECONDS = 0.5;
-export const MAX_CLIP_INPUT_BYTES = 250 * 1024 * 1024;
+// The source is mounted read-only (WORKERFS), so ffmpeg reads it from the Blob
+// and only the clip lives in wasm memory (2 GB at most), along with the copy
+// readFile hands back. The limit applies to the clip's share of the source;
+// a re-encode can come out larger than that.
+export const MAX_CLIP_BYTES = 500 * 1024 * 1024;
+
+let mountCount = 0;
 
 export function canCommitClip(operation, currentOperation) {
   return operation === currentOperation && operation?.cancelled !== true;
@@ -49,10 +55,10 @@ export function clipReencodes(range, crop = null, { exact = false } = {}) {
   return Boolean(crop) || (exact && range.start > 0);
 }
 
-export function trimCommand(range, crop = null, { exact = false } = {}) {
+export function trimCommand(range, crop = null, { exact = false, input = "input.mp4" } = {}) {
   const command = [
     "-ss", range.start.toFixed(3),
-    "-i", "input.mp4",
+    "-i", input,
     "-t", range.duration.toFixed(3),
     "-map", "0:v?",
     "-map", "0:a?"
@@ -73,9 +79,9 @@ export function trimCommand(range, crop = null, { exact = false } = {}) {
   return command;
 }
 
-export function compatibleTrimCommand(range, crop = null) {
+export function compatibleTrimCommand(range, crop = null, { input = "input.mp4" } = {}) {
   const command = [
-    "-i", "input.mp4",
+    "-i", input,
     // Seeking after opening the input is slower, but is frame-accurate and
     // works around AV1 keyframe/timestamp failures seen in Facebook clips.
     "-ss", range.start.toFixed(3),
@@ -104,23 +110,35 @@ export async function trimVideo(input, range, {
 } = {}) {
   onProgress(0.02);
   const blob = input instanceof Blob ? input : await fetcher(input).then(assertOk).then(response => response.blob());
-  if (blob.size > MAX_CLIP_INPUT_BYTES) throw new Error("This video is too large to clip in the browser (250 MB maximum).");
-  const normalized = normalizeTrimRange(range.start, range.end, range.total || range.end);
+  const total = range.total || range.end;
+  const normalized = normalizeTrimRange(range.start, range.end, total);
+  if (blob.size * (normalized.duration / total) > MAX_CLIP_BYTES) {
+    throw new Error(`This clip is too large to make in the browser. Choose ${formatSeconds(MAX_CLIP_BYTES / blob.size * total)} or less.`);
+  }
   const ffmpeg = await getFfmpeg();
   const progress = ({ progress: ratio }) => onProgress(0.15 + Math.max(0, Math.min(Number(ratio) || 0, 1)) * 0.75);
   ffmpeg.on?.("progress", progress);
+  // Mount the source instead of writing it into wasm memory: WORKERFS reads
+  // only the slices ffmpeg asks for. It is read-only, so the output goes to
+  // the default in-memory filesystem.
+  const mountPoint = `/clip-source-${++mountCount}`, source = `${mountPoint}/input.mp4`;
+  let mounted = false;
   try {
     onProgress(0.1);
-    await ffmpeg.writeFile("input.mp4", new Uint8Array(await blob.arrayBuffer()));
+    await ffmpeg.createDir(mountPoint);
+    if (await ffmpeg.mount("WORKERFS", { blobs: [{ name: "input.mp4", data: blob }] }, mountPoint) === false) {
+      throw new Error("This browser cannot read the video for clipping.");
+    }
+    mounted = true;
     onProgress(0.15);
-    let exitCode = await ffmpeg.exec(trimCommand(normalized, range.crop, { exact: range.exact === true }));
+    let exitCode = await ffmpeg.exec(trimCommand(normalized, range.crop, { exact: range.exact === true, input: source }));
     if (exitCode !== 0) {
       // Facebook commonly supplies AV1 video and HE-AAC audio as separate DASH
       // tracks. They mux cleanly for sharing, but stream-copy seeking or copied
       // audio timestamps can fail during edits. Retry as a conventional,
       // broadly compatible H.264/AAC MP4.
       await ffmpeg.deleteFile?.("output.mp4").catch?.(() => {});
-      exitCode = await ffmpeg.exec(compatibleTrimCommand(normalized, range.crop));
+      exitCode = await ffmpeg.exec(compatibleTrimCommand(normalized, range.crop, { input: source }));
     }
     if (exitCode !== 0) throw new Error("FFmpeg could not create this clip.");
     const output = await ffmpeg.readFile("output.mp4");
@@ -128,8 +146,16 @@ export async function trimVideo(input, range, {
     return new Blob([output], { type: "video/mp4" });
   } finally {
     ffmpeg.off?.("progress", progress);
-    await Promise.allSettled([ffmpeg.deleteFile?.("input.mp4"), ffmpeg.deleteFile?.("output.mp4")].filter(Boolean));
+    await ffmpeg.deleteFile?.("output.mp4").catch?.(() => {});
+    if (mounted) await ffmpeg.unmount(mountPoint).catch?.(() => {});
+    await ffmpeg.deleteDir(mountPoint).catch?.(() => {});
   }
+}
+
+function formatSeconds(seconds) {
+  const whole = Math.max(1, Math.floor(seconds)), minutes = Math.floor(whole / 60), rest = whole % 60;
+  if (!minutes) return `${whole} s`;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
 }
 
 function assertOk(response) {

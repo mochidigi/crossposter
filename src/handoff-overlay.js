@@ -10,7 +10,7 @@
 (() => {
   if (globalThis.__crossposterHandoffOverlay) return;
   globalThis.__crossposterHandoffOverlay = true;
-  const runtime = (globalThis.browser ?? globalThis.chrome).runtime;
+  const runtime = globalThis.browser.runtime;
   let host = null, title = null, list = null, dismissed = false, rootStyle = null, shown = 0;
   // Remembered in the tab's sessionStorage, so a page that reloads during its
   // turn (X in Chrome) is covered from the first frame, before the background
@@ -47,15 +47,17 @@
     root.innerHTML = `
       <style>
         :host { all: initial; position: fixed; inset: 0; z-index: 2147483647; display: grid; place-items: center;
-          --ink: #111; --muted: #626262; --line: #c8c8c3; --surface: #fff; --current: #f4f4f1;
+          --ink: #111; --muted: #626262; --line: #c8c8c3; --surface: #fff; --current: #f4f4f1; --tile: #fff;
           --done: #147a3d; --action: #8a5300; --error: #a12424;
           color: var(--ink); background: rgb(244 244 241 / .96); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
         .card { display: grid; gap: 14px; width: min(420px, calc(100vw - 48px)); padding: 24px; border: 1px solid var(--line); background: var(--surface); }
         .title { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
         .rows { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-        .row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); }
+        .row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); }
         .row.current { border-color: var(--ink); background: var(--current); }
-        .row img { width: 20px; height: 20px; }
+        /* Network logos are drawn for a light background, so they sit on a light tile in both themes (as in Compose and the sidebar). */
+        .icon { display: grid; width: 28px; height: 28px; box-sizing: border-box; place-items: center; border: 1px solid var(--line); background: var(--tile); }
+        .icon img { display: block; width: 18px; height: 18px; object-fit: contain; }
         .name { overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
         .state { display: flex; align-items: center; justify-content: flex-end; gap: 7px; color: var(--muted); font-size: 13px; text-align: right; }
         .row.current .state { color: var(--ink); font-weight: 600; }
@@ -67,7 +69,7 @@
         .note { margin: 0; color: var(--muted); font-size: 13px; }
         .show { justify-self: start; padding: 4px 0; border: 0; color: var(--muted); background: none; font: inherit; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
         @media (prefers-color-scheme: dark) {
-          :host { --ink: #f0f0eb; --muted: #a8a8a2; --line: #4b4b48; --surface: #1c1c1b; --current: #2b2b29;
+          :host { --ink: #f0f0eb; --muted: #a8a8a2; --line: #4b4b48; --surface: #1c1c1b; --current: #2b2b29; --tile: #f0f0eb;
             --done: #4fbf7a; --action: #f0b45a; --error: #ff8f84; background: rgb(18 18 17 / .96); }
         }
         @keyframes spin { to { transform: rotate(1turn); } }
@@ -89,13 +91,16 @@
     const item = document.createElement("li");
     item.className = `row tone-${tone || "progress"}${current ? " current" : ""}`;
     if (current) item.setAttribute("aria-current", "step");
+    const tile = document.createElement("span");
+    tile.className = "icon";
     const image = document.createElement("img");
     image.alt = ""; image.src = icon || "";
+    tile.append(image);
     const name = document.createElement("span");
     name.className = "name"; name.textContent = label || "";
     const state = document.createElement("span");
     state.className = "state"; state.textContent = text || "";
-    item.append(image, name, state);
+    item.append(tile, name, state);
     return item;
   }
 
@@ -121,7 +126,7 @@
     if (state?.active) show(state); else remove();
   };
   const ask = () => {
-    try { runtime.sendMessage({ type: "GET_HANDOFF_OVERLAY" })?.then?.(apply)?.catch?.(() => {}); } catch {}
+    try { runtime.sendMessage({ type: "GET_HANDOFF_OVERLAY" }).then(apply).catch(() => {}); } catch {}
   };
   runtime.onMessage.addListener(message => {
     if (message?.type === "HANDOFF_OVERLAY") apply(message);

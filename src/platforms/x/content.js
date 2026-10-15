@@ -1,11 +1,24 @@
 (() => {
   const core = globalThis.CrossposterContent;
   if (!core) return;
-  // External links are t.co anchors. A quoted post nests inside a
-  // div[role='link'] within the article, and its links belong to that post.
-  const externalLinks = (root, post) => [...(root?.querySelectorAll?.("a[href^='https://t.co/']") || [])]
-    .filter(anchor => { const wrapper = anchor.parentElement?.closest?.("[role='link']"); return !wrapper || wrapper === post || !post?.contains?.(wrapper); });
+  // A quoted post nests inside a div[role='link'] within the article, and its
+  // text, links and "Show more" button belong to that post.
+  const ownedBy = (node, post) => { const wrapper = node.parentElement?.closest?.("[role='link']"); return !wrapper || wrapper === post || !post?.contains?.(wrapper); };
+  const ownNodes = (post, selector) => [...(post?.querySelectorAll?.(selector) || [])].filter(node => ownedBy(node, post));
+  const postTextNode = post => ownNodes(post, "[data-testid='tweetText']")[0] || null;
+  // External links are t.co anchors.
+  const externalLinks = (root, post) => [...(root?.querySelectorAll?.("a[href^='https://t.co/']") || [])].filter(anchor => ownedBy(anchor, post));
   const displayText = anchor => String(anchor.innerText ?? anchor.textContent ?? "").replace(/\s+/g, "").replace(/^https?:\/\//, "");
+  // An inline t.co anchor's text is the expanded URL: a hidden scheme span,
+  // the visible display URL, a hidden tail span and a hidden "…" (2026-10-14).
+  // X leaves "www." out of it, so the background prefers its syndication
+  // lookup and uses this only for links that lookup cannot resolve.
+  const expandedUrl = anchor => {
+    const parts = [...anchor.childNodes];
+    if (parts.at(-1)?.textContent === "…") parts.pop();
+    const url = parts.map(node => node.textContent).join("").trim();
+    return /^https?:\/\/[^\s…]+$/i.test(url) ? url : "";
+  };
   // tweetText keeps the author's line breaks as literal "\n" in its text nodes
   // (white-space: pre-wrap) and wraps each @mention, #hashtag and $cashtag in
   // an inline-flex box around a block span, which innerText breaks the line
@@ -61,13 +74,27 @@
     // postText). Link cards sit outside tweetText; captureLinks reports them
     // (with any inline links) and the draft appends the ones the text does not
     // already carry. The background expands t.co through X's syndication
-    // endpoint afterwards.
+    // endpoint afterwards, falling back to each inline anchor's expandedUrl:
+    // a long post's links have t.co codes of their own that the syndication
+    // payload, which covers only its first 280 characters, never lists.
+    // Outside its own page a long post shows only its opening, followed by a
+    // "Show more" button that expands the text in place (2026-10-15; the full
+    // text is already in the page, and an extension can't read it otherwise),
+    // so capture presses it first. A button inside a link is left alone, as
+    // pressing it would leave the page.
+    prepareCapture: async ({ post, helpers }) => {
+      const more = ownNodes(post, "[data-testid='tweet-text-show-more-link']").find(button => !button.closest?.("a[href]"));
+      const length = postTextNode(post)?.textContent.length;
+      if (!more || length == null) return;
+      more.click();
+      await helpers.waitForElement(() => !more.isConnected || postTextNode(post)?.textContent.length > length ? post : null, 2000).catch(() => {});
+    },
     captureText: ({ post }) => {
-      const text = post.querySelector("[data-testid='tweetText']");
+      const text = postTextNode(post);
       return text ? postText(text).trim() : "";
     },
     captureLinks: ({ post }) => {
-      const text = post.querySelector("[data-testid='tweetText']");
+      const text = postTextNode(post);
       const links = new Map();
       for (const anchor of externalLinks(post, post)) {
         const url = anchor.href;
@@ -76,8 +103,9 @@
         // A card anchor labels itself "domain Title"; the order is X's markup
         // in every UI language, not a translated string.
         const [display = "", ...title] = card ? String(anchor.getAttribute("aria-label") || "").trim().split(/\s+/) : [];
-        const link = links.get(url) || { url, display: displayText(anchor), title: "", inText: false };
+        const link = links.get(url) || { url, display: displayText(anchor), title: "", inText: false, expandedUrl: "" };
         link.inText ||= inText;
+        if (inText) link.expandedUrl ||= expandedUrl(anchor);
         if (card && display) Object.assign(link, { display, title: title.join(" ") });
         links.set(url, link);
       }

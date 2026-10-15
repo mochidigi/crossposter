@@ -1,6 +1,6 @@
 import { ext } from "./shared/browser.js";
 import { setHtml } from "./shared/dom.js";
-import { createDraft, creditPrefix, postText, validateDraft } from "./shared/draft.js";
+import { createDraft, creditByline, creditPrefix, postText, validateDraft } from "./shared/draft.js";
 import { canCommitClip, MIN_CLIP_SECONDS, normalizeTrimRange, trimVideo, videoCropFromNormalized } from "./shared/video-editor.js";
 import { canvasBlob, imageEditorShortcut, MARKUP_COLORS } from "./shared/image-editor.js";
 import { icon } from "./shared/icons.js";
@@ -56,7 +56,7 @@ const moduleStartAt = performance.now();
 // fallback for snapshots that have not landed yet.
 const [stored, directSessions] = await Promise.all([
   ext.storage.local.get(["pendingDraft", DEFAULT_DESTINATIONS_KEY, ENABLED_PLATFORMS_KEY, KNOWN_PLATFORMS_KEY, SHOW_INLINE_ACTIONS_KEY, CLIP_CUT_KEY]),
-  sessionId && ext.storage.session?.get ? ext.storage.session.get(CROSSPOST_SESSIONS_KEY).catch(() => null) : null
+  sessionId ? ext.storage.session.get(CROSSPOST_SESSIONS_KEY).catch(() => null) : null
 ]);
 let crosspostSession = directSessions?.[CROSSPOST_SESSIONS_KEY]?.find(candidate => candidate?.id === sessionId) || null;
 if (sessionId && !crosspostSession) {
@@ -105,7 +105,12 @@ const imageCropControls = document.querySelector("#imageCropControls"), imageMar
 const imageCropActions = document.querySelector("#imageCropActions"), imageEditActions = document.querySelector("#imageEditActions");
 const imageColor = document.querySelector("#imageColor"), imageSwatches = document.querySelector("#imageSwatches"), imageDelete = document.querySelector("#imageDelete");
 const imageError = document.querySelector("#imageError"), imageHint = document.querySelector("#imageHint"), imageMeta = document.querySelector("#imageMeta"), imageApply = document.querySelector("#imageApply");
+const cardDialog = document.querySelector("#cardDialog"), cardStage = document.querySelector("#cardStage"), cardThemes = document.querySelector("#cardThemes"), cardSizes = document.querySelector("#cardSizes");
+const cardCreditBox = document.querySelector("#cardCreditBox"), cardCreditOn = document.querySelector("#cardCreditOn"), cardCreditName = document.querySelector("#cardCreditName"), cardCreditDetail = document.querySelector("#cardCreditDetail");
+const cardMeta = document.querySelector("#cardMeta"), cardHint = document.querySelector("#cardHint"), cardError = document.querySelector("#cardError"), cardApply = document.querySelector("#cardApply");
+const cardText = document.querySelector("#cardText"), cardTextReset = document.querySelector("#cardTextReset"), cardDownload = document.querySelector("#cardDownload");
 const composeMain = document.querySelector("main"), composeTopbar = document.querySelector(".topbar");
+const mediaGrid = document.querySelector("#media"), mediaStatus = document.querySelector("#mediaStatus");
 const handoffOverlay = document.querySelector("#handoffOverlay"), handoffCancel = document.querySelector("#handoffCancel"), handoffCancelError = document.querySelector("#handoffCancelError");
 const handoffTitle = document.querySelector("#handoffOverlayTitle"), handoffLead = document.querySelector("#handoffOverlayLead"), handoffStatus = document.querySelector("#handoffStatus");
 const handoffNotice = document.querySelector("#handoffNotice"), handoffNew = document.querySelector("#handoffNew"), handoffActionsNote = document.querySelector("#handoffActionsNote");
@@ -116,6 +121,11 @@ let clipCropGesture = null;
 let clipScrubPointer = null;
 let imageState = null;
 let imageOpenAttempt = 0;
+let cardState = null;
+let cardRenderer = null;
+let cardAttempt = 0;
+let cardTimer = 0;
+let mediaDrag = null;
 let clipOperationActive = false;
 let publishBusy = false;
 let publishGeneration = 0;
@@ -170,12 +180,39 @@ historyHint.onclick = openHistory;
 renderHistoryHint().catch(() => {});
 document.querySelector("#addMedia").onclick = () => document.querySelector("#file").click();
 document.querySelector("#file").onchange = event => {
-  for (const file of [...event.target.files].slice(0, 4 - draft.media.length)) {
-    const url = URL.createObjectURL(file); objectUrls.push(url); draft.media.push({ kind: file.type.startsWith("video") ? "video" : "image", url, local: true, filename: file.name });
-  }
+  addMediaFiles([...event.target.files]);
   event.target.value = "";
-  renderMedia();
 };
+// Photos and videos can also be pasted or dropped anywhere on Compose.
+document.addEventListener("paste", event => {
+  if (!mediaInputOpen()) return;
+  const files = [...(event.clipboardData?.files || [])].filter(isMediaFile);
+  if (!files.length) return;
+  // Spreadsheet cells and some documents also carry a picture of their text:
+  // pasted into a text field, the text is what's meant.
+  if (event.target?.closest?.("textarea, input") && event.clipboardData.getData("text/plain").trim()) return;
+  event.preventDefault();
+  addMediaFiles(files, { announce: true, rename: true });
+});
+const composerCard = document.querySelector(".composer-card");
+let fileDragTimer = 0;
+const draggingFiles = event => !mediaDrag && Array.from(event.dataTransfer?.types || []).includes("Files");
+document.addEventListener("dragover", event => {
+  if (!draggingFiles(event)) return;
+  // Unhandled, a dropped file would replace Compose (and the draft) with itself.
+  event.preventDefault();
+  const open = mediaInputOpen();
+  event.dataTransfer.dropEffect = open ? "copy" : "none";
+  composerCard.classList.toggle("is-file-over", open);
+  clearTimeout(fileDragTimer); fileDragTimer = setTimeout(() => composerCard.classList.remove("is-file-over"), 150);
+});
+document.addEventListener("drop", event => {
+  if (!draggingFiles(event)) return;
+  event.preventDefault();
+  composerCard.classList.remove("is-file-over");
+  if (mediaInputOpen()) addMediaFiles([...event.dataTransfer.files], { announce: true });
+});
+setupMediaReorder();
 document.querySelector("#clipClose").onclick = closeClipper;
 document.querySelector("#clipCancel").onclick = closeClipper;
 clipPlay.onclick = toggleClipPlayback;
@@ -234,6 +271,30 @@ imageDialog.addEventListener("cancel", event => {
   imageState?.editor.tool === "crop" ? cancelImageCrop() : closeImageEditor();
 });
 document.addEventListener("keydown", imageKeyDown);
+document.querySelector("#textImage").onclick = () => openTextCard();
+document.querySelector("#cardClose").onclick = closeTextCard;
+document.querySelector("#cardCancel").onclick = closeTextCard;
+cardApply.onclick = applyTextCards;
+cardDownload.onclick = downloadTextCards;
+cardText.addEventListener("input", () => {
+  if (!cardState) return;
+  cardState.text = cardText.value; renderTextCardControls(); scheduleTextCards();
+});
+cardCreditOn.onchange = () => {
+  if (!cardState) return;
+  cardState.credit = cardCreditOn.checked; renderTextCardControls(); renderTextCards();
+  if (cardState.credit && !cardCreditName.value.trim()) cardCreditName.focus();
+};
+for (const field of [cardCreditName, cardCreditDetail]) field.addEventListener("input", () => {
+  if (!cardState) return;
+  cardState.byline = { author: cardCreditName.value, detail: cardCreditDetail.value };
+  // Typing a name means showing the credit.
+  if (field === cardCreditName && cardCreditName.value.trim()) cardState.credit = true;
+  renderTextCardControls(); scheduleTextCards();
+});
+cardTextReset.onclick = () => { if (!cardState) return; cardText.value = cardState.text = draft.text; renderTextCardControls(); renderTextCards(); cardText.focus(); };
+cardDialog.addEventListener("cancel", event => { event.preventDefault(); closeTextCard(); });
+new ResizeObserver(() => fitTextCardPreviews()).observe(cardStage);
 document.querySelector("#publish").onclick = publish;
 handoffCancel.onclick = cancelNativeHandoff;
 handoffNew.onclick = startNewPost;
@@ -555,40 +616,143 @@ function renderPublishAction() {
   button.disabled = !selected.length || mediaBlocked;
   setHtml(button, `${action}${icon("arrow-right")}`);
 }
+// Compact tiles that show each picture whole. With two or more, they can be
+// dragged into a new order (a video by its grip, so its controls still work)
+// or moved with the arrow keys on the grip.
 function renderMedia() {
-  setHtml(document.querySelector("#media"), draft.media.map((item, index) => {
+  const count = draft.media.length;
+  mediaGrid.classList.toggle("can-reorder", count > 1);
+  setHtml(mediaGrid, draft.media.map((item, index) => {
     const video = item.kind === "video";
+    const noun = video ? "video" : item.textCard ? "text image" : "image";
     const busyMedia = item.resolving || item.preparing;
-    const edits = [item.resolveError || "", item.prepareError || "", item.trim ? `Clipped to ${formatTime(item.trim.duration)}` : "", item.crop ? `Cropped ${item.crop}` : "", item.edited ? "Edited image" : ""].filter(Boolean);
+    // A text image's own slide number, which reordering doesn't change.
+    const textCard = item.textCard ? (item.textCard.slides > 1 ? `Text image ${item.textCard.slide} of ${item.textCard.slides}` : "Text image") : "";
+    const edits = [item.resolveError || "", item.prepareError || "", item.trim ? `Clipped to ${formatTime(item.trim.duration)}` : "", item.crop ? `Cropped ${item.crop}` : "", item.edited ? "Edited image" : "", textCard].filter(Boolean);
     const note = edits.length ? `<figcaption>${escapeAttr(edits.join(" · "))}</figcaption>` : "";
     const poster = video && item.poster ? ` poster="${escapeAttr(item.poster)}"` : "";
     const source = video && (isStreamMedia(item) || item.resolving || item.resolveError) ? "" : ` src="${escapeAttr(item.url)}"`;
     const disabled = busyMedia || item.resolveError ? " disabled" : "";
+    // On a narrow tile Edit shows only its icon (see .media-label).
+    const editLabel = ` aria-label="Edit ${noun}" title="Edit ${noun}"`;
     const edit = video
-      ? `<button class="media-clip" data-clip="${index}" type="button"${disabled}>${icon("scissors")}Edit</button>`
-      : `<button class="media-clip" data-image-edit="${index}" type="button">${icon("pen")}Edit</button>`;
-    const download = video ? `<button class="media-download" data-download="${index}" type="button"${disabled}>${icon("download")}Download</button>` : "";
+      ? `<button class="media-button" data-clip="${index}" type="button"${editLabel}${disabled}>${icon("scissors")}<span class="media-label">Edit</span></button>`
+      : item.textCard
+        ? `<button class="media-button" data-text-card="${index}" type="button"${editLabel}>${icon("text-image")}<span class="media-label">Edit</span></button>`
+        : `<button class="media-button" data-image-edit="${index}" type="button"${editLabel}>${icon("pen")}<span class="media-label">Edit</span></button>`;
+    const download = `<button class="media-icon" ${video ? "data-download" : "data-download-image"}="${index}" type="button" aria-label="Download ${noun}" title="Download ${noun}"${video ? disabled : ""}>${icon("download")}</button>`;
+    const grip = count > 1 ? `<span class="media-icon media-grip" data-move="${index}" role="button" tabindex="0" aria-label="Move ${noun}, ${index + 1} of ${count}" aria-describedby="mediaMoveHint" title="Drag to move, or use the arrow keys">${icon("grip")}</span>` : "";
     const busy = busyMedia ? `<div class="media-busy" role="status" aria-live="polite"><span class="media-spinner" aria-hidden="true"></span><span>${item.resolving ? "Locating video…" : "Preparing video…"}</span></div>` : "";
-    return `<figure${busyMedia ? ' class="is-preparing"' : ""}><${video ? "video controls preload=metadata" : "img"}${source}${poster}></${video ? "video" : "img"}>${busy}<button class="media-remove" data-remove="${index}" aria-label="Remove media">${icon("trash")}</button><div class="media-actions">${edit}${download}</div>${note}</figure>`;
+    const label = `${noun[0].toUpperCase()}${noun.slice(1)} ${index + 1} of ${count}`;
+    const picture = video ? `<video controls preload=metadata${source}${poster}></video>` : `<img src="${escapeAttr(item.url)}" alt="${escapeAttr(label)}" draggable="false">`;
+    return `<figure class="media-tile${busyMedia ? " is-preparing" : ""}" data-index="${index}"><div class="media-frame">${picture}${busy}<div class="media-actions">${edit}${download}</div><div class="media-corner">${grip}<button class="media-icon" data-remove="${index}" type="button" aria-label="Remove ${noun}" title="Remove">${icon("trash")}</button></div></div>${note}</figure>`;
   }).join(""));
   document.querySelectorAll("[data-remove]").forEach(button => button.onclick = () => {
     const [removed] = draft.media.splice(Number(button.dataset.remove), 1); releaseObjectUrl(removed?.url); renderMedia(); renderPublishAction();
   });
   document.querySelectorAll("[data-clip]").forEach(button => button.onclick = () => openClipper(Number(button.dataset.clip)));
   document.querySelectorAll("[data-download]").forEach(button => button.onclick = () => downloadVideo(Number(button.dataset.download), button));
+  document.querySelectorAll("[data-download-image]").forEach(button => button.onclick = () => downloadImage(Number(button.dataset.downloadImage), button));
   document.querySelectorAll("[data-image-edit]").forEach(button => button.onclick = () => openImageEditor(Number(button.dataset.imageEdit)));
+  document.querySelectorAll("[data-text-card]").forEach(button => button.onclick = () => openTextCard(draft.media[Number(button.dataset.textCard)]?.textCard));
   // Instagram's tile depends on whether the draft has media.
   renderDestinations();
+}
+
+const isMediaFile = file => /^(image|video)\//.test(file?.type || "");
+// Media can be added while Compose itself is in use: not under a dialog or
+// the handoff panel.
+function mediaInputOpen() { return !document.querySelector("dialog[open]") && handoffOverlay.hidden; }
+
+// Adds picked, pasted or dropped files, as many as the four places allow.
+// rename: pasted files all arrive as "image.png", so give them names apart.
+function addMediaFiles(files, { announce = false, rename = false } = {}) {
+  const usable = files.filter(isMediaFile), room = 4 - draft.media.length;
+  if (!usable.length) { if (announce && files.length) showToast("Only photos and videos can be added."); return; }
+  if (room < 1) { showToast("A post holds up to four photos or videos. Remove one to add another."); return; }
+  const added = usable.slice(0, room), stamp = Date.now();
+  added.forEach((file, index) => {
+    const url = URL.createObjectURL(file); objectUrls.push(url);
+    const video = file.type.startsWith("video/");
+    const filename = rename ? `pasted-${stamp}-${index + 1}.${file.type.split("/")[1].replace(/\W.*$/, "") || (video ? "mp4" : "png")}` : file.name;
+    draft.media.push({ kind: video ? "video" : "image", url, local: true, filename });
+  });
+  renderMedia();
+  if (usable.length > room) showToast(`Added ${added.length}: a post holds up to four photos or videos.`);
+  else if (announce) {
+    const videos = added.filter(file => file.type.startsWith("video/")).length;
+    const noun = videos === added.length ? "video" : videos ? "item" : "image";
+    showToast(added.length > 1 ? `${added.length} ${noun}s added.` : `${noun === "video" ? "Video" : "Image"} added.`);
+  }
+}
+
+function moveMedia(from, to) {
+  const last = draft.media.length - 1;
+  to = Math.max(0, Math.min(to, last));
+  if (from === to || from < 0 || from > last) return false;
+  const [item] = draft.media.splice(from, 1);
+  draft.media.splice(to, 0, item);
+  renderMedia();
+  mediaStatus.textContent = `Moved to ${to + 1} of ${draft.media.length}.`;
+  return true;
+}
+
+// Drag a tile onto another to put it before or after that one (a bar marks
+// which); the grip also moves it with the arrow keys, Home and End.
+function setupMediaReorder() {
+  const clearMarks = () => mediaGrid.querySelectorAll(".drop-before, .drop-after").forEach(tile => tile.classList.remove("drop-before", "drop-after"));
+  const end = () => {
+    mediaDrag = null; clearMarks();
+    mediaGrid.querySelectorAll(".media-tile").forEach(tile => { tile.draggable = false; tile.classList.remove("is-dragging"); });
+  };
+  mediaGrid.addEventListener("pointerdown", event => {
+    const tile = event.target.closest(".media-tile");
+    // Buttons and a video's controls keep their own clicks.
+    if (tile) tile.draggable = draft.media.length > 1 && !event.target.closest("button, video");
+  });
+  mediaGrid.addEventListener("dragstart", event => {
+    const tile = event.target.closest?.(".media-tile");
+    if (!tile?.draggable) return;
+    mediaDrag = { from: Number(tile.dataset.index), to: null };
+    event.dataTransfer.effectAllowed = "move";
+    // A private type: dropped on the post field, it inserts nothing.
+    event.dataTransfer.setData("application/x-crossposter-media", String(mediaDrag.from));
+    tile.classList.add("is-dragging");
+  });
+  mediaGrid.addEventListener("dragover", event => {
+    if (!mediaDrag) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const tile = event.target.closest?.(".media-tile");
+    if (!tile) return; // the gap between tiles keeps the last mark
+    const box = tile.getBoundingClientRect(), after = event.clientX > box.left + box.width / 2;
+    mediaDrag.to = Number(tile.dataset.index) + (after ? 1 : 0);
+    clearMarks(); tile.classList.add(after ? "drop-after" : "drop-before");
+  });
+  mediaGrid.addEventListener("drop", event => {
+    if (!mediaDrag) return;
+    event.preventDefault();
+    const { from, to } = mediaDrag;
+    end();
+    if (to !== null) moveMedia(from, from < to ? to - 1 : to);
+  });
+  mediaGrid.addEventListener("dragend", end);
+  mediaGrid.addEventListener("keydown", event => {
+    const grip = event.target.closest?.("[data-move]");
+    if (!grip) return;
+    const from = Number(grip.dataset.move);
+    const to = { ArrowLeft: from - 1, ArrowUp: from - 1, ArrowRight: from + 1, ArrowDown: from + 1, Home: 0, End: draft.media.length - 1 }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    if (moveMedia(from, to)) mediaGrid.querySelector(`[data-move="${Math.max(0, Math.min(to, draft.media.length - 1))}"]`)?.focus();
+  });
 }
 
 async function downloadVideo(index, button) {
   let item = draft.media[index];
   try {
     button.disabled = true;
-    if (isStreamMedia(item)) {
-      await prepareStreamPreview(index, item);
-      item = draft.media[index];
-    }
+    if (isStreamMedia(item)) item = await prepareStreamPreview(index, item) || item;
     // Resolver modules are only needed for downloads; keep them out of the
     // startup graph (same principle as the lazy Fabric.js import).
     const { mediaDownloadDescriptor } = await import("./shared/downloaders.js");
@@ -611,6 +775,29 @@ async function downloadVideo(index, button) {
   }
 }
 
+// Saves a photo, edited image or text image as a file. A captured image is
+// fetched first, so the file gets the extension of what it really is.
+async function downloadImage(index, button) {
+  const item = draft.media[index];
+  if (!item) return;
+  button.disabled = true;
+  try {
+    const { safeDownloadName } = await import("./shared/downloaders.js");
+    let url = item.url, type = item.type || "";
+    if (!item.local) {
+      const blob = await fetch(item.url).then(response => response.ok ? response.blob() : null).catch(() => null);
+      if (blob) { url = URL.createObjectURL(blob); objectUrls.push(url); type = blob.type; }
+    }
+    const filename = safeDownloadName(handoffFilename({ ...item, type: handoffMediaType(type, "image") }, index));
+    await ext.downloads.download({ url, filename });
+    showToast("Image download started.");
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "The image could not be downloaded.", { report: true });
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
 async function openClipper(index) {
   if (clipOperationActive) { showToast("The previous clip is still finishing in the background."); return; }
   let item = draft.media[index];
@@ -618,8 +805,9 @@ async function openClipper(index) {
   if (isStreamMedia(item)) {
     showToast("Preparing the video for editing…");
     try {
-      await prepareStreamPreview(index, item);
-      item = draft.media[index];
+      item = await prepareStreamPreview(index, item);
+      index = draft.media.indexOf(item);
+      if (index < 0) return;
     } catch (error) {
       showToast(error instanceof Error ? error.message : "The video could not be prepared for editing.", { report: true });
       return;
@@ -1122,6 +1310,223 @@ function loadEditorImage(url) {
   });
 }
 
+// Text to image (shared/text-cards.js): text set as one image, or as a
+// carousel when it is long. The image has its own text, which starts as the
+// post's, so a long text can go in the image under a short caption. Each
+// Text to image makes a set of its own (textCard.id); Edit on any of its
+// images reopens that set, and updating it replaces just that set, in place.
+// Sets share the four media places with the rest.
+function inTextCardSet(item, id) { return Boolean(item?.textCard) && item.textCard.id === id; }
+function textCardRoom(id) { return 4 - draft.media.filter(item => !inTextCardSet(item, id)).length; }
+
+// saved: the textCard of the image being edited, if any.
+async function openTextCard(saved = null) {
+  if (cardDialog.open) return;
+  const id = saved ? saved.id : crypto.randomUUID();
+  if (textCardRoom(id) < 1) { showToast("A post holds up to four photos or videos. Remove one to add a text image."); return; }
+  const attempt = ++cardAttempt;
+  cardError.textContent = ""; cardMeta.textContent = ""; cardHint.textContent = ""; setTextCardActions(false);
+  // The credit starts as the captured post's (a fresh or own post has none to
+  // show until a name is typed); an edited image brings back its own.
+  const captured = creditByline(draft), byline = saved?.byline || captured || {};
+  cardText.value = typeof saved?.text === "string" ? saved.text : draft.text;
+  cardCreditName.value = byline.author || ""; cardCreditDetail.value = byline.detail || "";
+  setTextCardBusy(true); cardTextReset.hidden = true;
+  cardStage.replaceChildren();
+  cardDialog.showModal();
+  try {
+    // Like Fabric.js, kept out of Compose's startup until first use.
+    const [cards, { TextCardRenderer }] = await Promise.all([import("./shared/text-cards.js"), import("./shared/text-card-renderer.js")]);
+    const style = saved || (await ext.storage.local.get(cards.TEXT_CARD_STYLE_KEY))[cards.TEXT_CARD_STYLE_KEY];
+    if (attempt !== cardAttempt) return;
+    cardRenderer ||= new TextCardRenderer();
+    const credit = typeof saved?.credit === "boolean" ? saved.credit : Boolean(captured) && draft.credit !== false;
+    cardState = { id, cards, style: cards.normalizeTextCardStyle(style), byline: { author: cardCreditName.value, detail: cardCreditDetail.value }, credit, text: cardText.value, layout: null, rendering: null };
+    setTextCardBusy(false); setTextCardActions(false); cardText.focus();
+    renderTextCardControls();
+    await renderTextCards();
+  } catch (error) {
+    if (attempt === cardAttempt) cardError.textContent = error instanceof Error ? error.message : "The text image could not be made.";
+  }
+}
+
+function renderTextCardControls() {
+  const { cards, style, credit, text: imageText } = cardState;
+  if (!cardThemes.childElementCount) {
+    setHtml(cardThemes, cards.TEXT_CARD_THEMES.map(theme => `<button class="chip" data-card-theme="${theme.id}" type="button" aria-pressed="false"><span class="card-swatch" style="--swatch-bg:${theme.swatch.background};--swatch-ink:${theme.swatch.ink};font-family:${escapeAttr(theme.font)};font-weight:${theme.weight}" aria-hidden="true">Aa</span>${escapeAttr(theme.label)}</button>`).join(""));
+    setHtml(cardSizes, cards.TEXT_CARD_SIZES.map(size => `<button class="chip" data-card-size="${size.id}" type="button" aria-pressed="false" title="${escapeAttr(size.title)}"><span class="aspect-glyph ${size.id}" aria-hidden="true"></span>${escapeAttr(size.label)}</button>`).join(""));
+    cardThemes.querySelectorAll("[data-card-theme]").forEach(button => button.onclick = () => setTextCardStyle({ theme: button.dataset.cardTheme }));
+    cardSizes.querySelectorAll("[data-card-size]").forEach(button => button.onclick = () => setTextCardStyle({ size: button.dataset.cardSize }));
+  }
+  const press = (button, on) => { button.classList.toggle("active", on); button.setAttribute("aria-pressed", String(on)); };
+  cardThemes.querySelectorAll("[data-card-theme]").forEach(button => press(button, button.dataset.cardTheme === style.theme));
+  cardSizes.querySelectorAll("[data-card-size]").forEach(button => press(button, button.dataset.cardSize === style.size));
+  cardCreditOn.checked = credit; cardCreditBox.classList.toggle("is-off", !credit);
+  cardTextReset.hidden = !draft.text.trim() || imageText === draft.text;
+}
+
+function setTextCardStyle(change) {
+  if (!cardState) return;
+  cardState.style = { ...cardState.style, ...change };
+  ext.storage.local.set({ [cardState.cards.TEXT_CARD_STYLE_KEY]: cardState.style }).catch(() => {});
+  renderTextCardControls(); renderTextCards();
+}
+
+// A layout takes a few ms (about 30 for a long carousel): while typing, wait
+// for a short pause rather than run on every keystroke.
+function scheduleTextCards() { clearTimeout(cardTimer); cardTimer = setTimeout(renderTextCards, 60); }
+
+// Lays the text out and shows the slides as live cards; the PNGs are drawn
+// only when Add is chosen (applyTextCards), which is what takes time.
+function renderTextCards() {
+  clearTimeout(cardTimer); cardTimer = 0;
+  const state = cardState, attempt = ++cardAttempt;
+  if (!state) return Promise.resolve();
+  state.rendering = (async () => {
+    const room = textCardRoom(state.id);
+    if (!state.text.trim()) {
+      state.layout = null; cardStage.replaceChildren(); cardMeta.textContent = ""; cardError.textContent = "";
+      cardHint.textContent = "Type the text for the image."; setTextCardActions(false);
+      return;
+    }
+    try {
+      const layout = await cardRenderer.layout({ text: state.text, byline: state.credit ? state.byline : null, theme: state.style.theme, size: state.style.size, maxSlides: room, guess: state.layout?.fontSize });
+      if (attempt !== cardAttempt) return;
+      state.layout = layout;
+      const count = layout.slides.length, { width, height } = layout.size;
+      cardStage.replaceChildren(...layout.slides.map((slide, index) => {
+        const figure = document.createElement("figure"), card = cardRenderer.slideElement(slide);
+        figure.className = "card-slide"; figure.setAttribute("role", "img");
+        figure.setAttribute("aria-label", count > 1 ? `Image ${index + 1} of ${count}` : "The text image");
+        card.style.width = `${width}px`; card.style.height = `${height}px`;
+        figure.append(card);
+        return figure;
+      }));
+      fitTextCardPreviews();
+      cardMeta.textContent = count > 1 ? `${count} images, ${width} × ${height}` : `${width} × ${height}`;
+      if (layout.overflow) {
+        cardHint.textContent = "";
+        cardError.textContent = room < state.cards.TEXT_CARD_MAX_SLIDES
+          ? `At a readable size this text takes ${count} images, and the post has room for ${room}. Shorten the text, or remove another image or video.`
+          : `At a readable size this text takes ${count} images; a post holds ${room}. Shorten the text${layout.size.id === "story" ? "" : ", or choose 9:16 for more room on each"}.`;
+        setTextCardActions(false);
+        return;
+      }
+      cardError.textContent = "";
+      cardHint.textContent = count > 1 ? `Too long for one image, so it continues across ${count}. Post them together as a carousel.` : "";
+      setHtml(cardApply, `${draft.media.some(item => inTextCardSet(item, state.id)) ? "Update" : "Add"} ${count > 1 ? `${count} images` : "image"}${icon("check")}`);
+      setTextCardActions(true);
+    } catch (error) {
+      if (attempt !== cardAttempt) return;
+      cardError.textContent = error instanceof Error ? error.message : "The text image could not be made.";
+      setTextCardActions(false);
+    }
+  })();
+  return state.rendering;
+}
+
+// Scales the live cards to fit the stage side by side (or one per view in
+// the narrow layout's swipeable row). A transform keeps their line breaks.
+function fitTextCardPreviews() {
+  const figures = [...cardStage.querySelectorAll(".card-slide")], size = cardState?.layout?.size;
+  if (!figures.length || !size) return;
+  const room = innerSize(cardStage), gap = parseFloat(getComputedStyle(cardStage).columnGap) || 0;
+  const across = matchMedia("(max-width: 600px)").matches ? room.width * 0.82 : (room.width - gap * (figures.length - 1)) / figures.length;
+  const scale = Math.min(across / size.width, room.height / size.height);
+  for (const figure of figures) {
+    figure.style.width = `${size.width * scale}px`; figure.style.height = `${size.height * scale}px`;
+    figure.firstElementChild.style.transform = `scale(${scale})`;
+  }
+}
+
+// Draws each slide as a PNG (tens of ms each) and puts the set in the post.
+function setTextCardActions(enabled) { cardApply.disabled = cardDownload.disabled = !enabled; }
+
+// Brings the layout up to date with typing still waiting, then draws its PNGs
+// (tens of ms a slide) with the dialog locked. The PNGs are kept for that
+// layout, so Download and then Add draw them once. Null when the dialog
+// closed meanwhile or there is nothing to draw.
+async function exportTextCards(button) {
+  const state = cardState;
+  if (!state || button.disabled) return null;
+  if (cardTimer) renderTextCards();
+  await state.rendering;
+  const layout = state.layout;
+  if (state !== cardState || !layout || layout.overflow) return null;
+  if (state.pngs?.layout === layout) return { state, blobs: state.pngs.blobs };
+  setTextCardBusy(true); cardError.textContent = "";
+  const content = [...button.childNodes].map(node => node.cloneNode(true));
+  setHtml(button, layout.slides.length > 1 ? "Creating images…" : "Creating image…");
+  try {
+    const blobs = [];
+    for (const slide of layout.slides) {
+      blobs.push(await cardRenderer.png(layout, slide));
+      if (state !== cardState) return null;
+    }
+    state.pngs = { layout, blobs };
+    return { state, blobs };
+  } catch (error) {
+    if (state === cardState) cardError.textContent = error instanceof Error ? error.message : "The text image could not be made.";
+    return null;
+  } finally {
+    if (state === cardState) { button.replaceChildren(...content); setTextCardBusy(false); }
+  }
+}
+
+// Saves the slides as PNG files, without adding them to the post.
+async function downloadTextCards() {
+  const result = await exportTextCards(cardDownload);
+  if (!result) return;
+  const stamp = Date.now(), count = result.blobs.length;
+  try {
+    for (const [index, blob] of result.blobs.entries()) {
+      const url = URL.createObjectURL(blob); objectUrls.push(url);
+      await ext.downloads.download({ url, filename: `crossposter-text-${stamp}${count > 1 ? `-${index + 1}` : ""}.png` });
+    }
+    // The page's toasts sit under the dialog; its hint is in view.
+    if (result.state === cardState) cardHint.textContent = count > 1 ? `Downloading ${count} images.` : "Downloading the image.";
+  } catch (error) {
+    if (result.state === cardState) cardError.textContent = error instanceof Error ? error.message : "The image could not be downloaded.";
+  }
+}
+
+async function applyTextCards() {
+  const result = await exportTextCards(cardApply);
+  if (!result) return;
+  const { state } = result;
+  const urls = result.blobs.map(blob => URL.createObjectURL(blob));
+  const inSet = item => inTextCardSet(item, state.id);
+  const replacing = draft.media.some(inSet);
+  // Images from before sets had ids form one set; the update gives it one.
+  const textCard = { id: state.id ?? crypto.randomUUID(), ...state.style, text: state.text, credit: state.credit, byline: { ...state.byline } };
+  const made = Date.now();
+  const images = urls.map((url, index) => {
+    objectUrls.push(url);
+    return { kind: "image", url, local: true, filename: `crossposter-text-${made}-${index + 1}.png`, textCard: { ...textCard, slide: index + 1, slides: urls.length } };
+  });
+  // The set takes its old place, or goes after the other media.
+  const first = draft.media.findIndex(inSet);
+  draft.media.filter(inSet).forEach(item => releaseObjectUrl(item.url));
+  const others = draft.media.filter(item => !inSet(item));
+  others.splice(first < 0 ? others.length : first, 0, ...images);
+  draft.media = others;
+  closeTextCard(); renderMedia(); renderPublishAction();
+  const noun = images.length > 1 ? `${images.length} text images` : "Text image";
+  showToast(`${noun} ${replacing ? "updated" : "added"}.`);
+}
+
+function setTextCardBusy(busy) {
+  cardText.readOnly = cardCreditName.readOnly = cardCreditDetail.readOnly = busy;
+  for (const control of [cardApply, cardDownload, cardTextReset, cardCreditOn, ...cardDialog.querySelectorAll(".studio-toolbar button")]) control.disabled = busy;
+}
+
+function closeTextCard() {
+  cardAttempt++; clearTimeout(cardTimer); cardTimer = 0;
+  cardState = null;
+  cardStage.replaceChildren(); setTextCardBusy(false);
+  if (cardDialog.open) cardDialog.close();
+}
+
 function setClipBusy(busy) {
   if (!clipState) return;
   clipState.busy = busy;
@@ -1411,16 +1816,18 @@ function prepareStreamPreview(index, item = draft.media[index]) {
   item.preparing = true; item.prepareError = ""; renderMedia();
   const task = streamPreparationQueue.catch(() => {}).then(async () => {
     const blob = await prepareStreamMedia(item);
-    if (draft.media[index] !== item) return draft.media[index];
+    // Found by identity: the media may have been reordered meanwhile.
+    const at = draft.media.indexOf(item);
+    if (at < 0) return null;
     if (!blob?.size) throw new Error("The prepared video was empty.");
     const url = URL.createObjectURL(blob); objectUrls.push(url);
     const { streamType: _streamType, audioUrl: _audioUrl, ...prepared } = withoutStoredReference(item);
-    draft.media[index] = { ...prepared, url, local: true, filename: item.filename || "video.mp4" };
+    draft.media[at] = { ...prepared, url, local: true, filename: item.filename || "video.mp4" };
     renderMedia();
-    return draft.media[index];
+    return draft.media[at];
   }).catch(error => {
     streamPreparationTasks.delete(item);
-    if (draft.media[index] === item) {
+    if (draft.media.includes(item)) {
       item.preparing = false;
       item.prepareError = error instanceof Error ? error.message : "The video preview could not be prepared.";
       renderMedia();
@@ -1431,7 +1838,6 @@ function prepareStreamPreview(index, item = draft.media[index]) {
   streamPreparationQueue = task;
   return task;
 }
-window.addEventListener("beforeunload", () => objectUrls.forEach(URL.revokeObjectURL));
 
 if (composeUrl.searchParams.get("settings") === "1") {
   composeUrl.searchParams.delete("settings");

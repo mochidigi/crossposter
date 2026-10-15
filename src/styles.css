@@ -170,6 +170,7 @@ input, select { color: var(--ink); background: var(--surface); }
 .text-meta, .attach-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 9px; color: var(--ink); font-size: 12px; }
 .text-meta a { font-weight: 650; text-underline-offset: 3px; }
 .attach-row { align-items: center; flex-wrap: wrap; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.attach-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0 22px; }
 
 .attach-button, .quiet, .secondary, .primary, .intent-btn, .icon-button {
   display: inline-flex;
@@ -298,33 +299,43 @@ input, select { color: var(--ink); background: var(--surface); }
 .errors { margin-top: 12px; padding-left: 9px; border-left: 2px solid var(--ink); color: var(--ink); font-size: 12px; }
 #errors:empty { display: none; }
 
-.media-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 18px 0; }
+/* Compact square tiles, four to a row, each showing its picture whole on a
+   quiet ground: a cropped thumbnail would hide what gets posted. */
+.media-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 18px 0; }
 .media-grid:empty { display: none; }
-.media-grid figure { position: relative; margin: 0; }
-.media-grid img, .media-grid video { display: block; width: 100%; border: 1px solid var(--line); border-radius: 1px; background: var(--media-bg); }
-/* The whole image, letterboxed: a cropped thumbnail would hide what gets posted. */
-.media-grid img { height: 180px; object-fit: contain; }
-.media-grid video { height: auto; object-fit: contain; }
-.media-grid .media-remove, .media-grid .media-clip, .media-grid .media-download {
-  position: absolute;
-  top: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: 32px;
-  border: 1px solid #fff;
-  border-radius: 1px;
-  color: #fff;
-  background: rgba(0, 0, 0, .82);
-  cursor: pointer;
+.media-tile { position: relative; min-width: 0; margin: 0; }
+.media-frame { position: relative; overflow: hidden; aspect-ratio: 1; border: 1px solid var(--line-soft); border-radius: 2px; background: var(--surface-sunken); container-type: inline-size; }
+.media-frame img, .media-frame video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.media-frame video { background: var(--media-bg); }
+.media-grid.can-reorder .media-frame img { cursor: grab; }
+.media-tile.is-dragging { opacity: .4; }
+/* Where a dragged tile will land: a bar in the gap before or after. */
+.media-tile.drop-before::before, .media-tile.drop-after::after { position: absolute; z-index: 2; top: 0; width: 3px; height: 100%; border-radius: 2px; background: var(--signal); content: ""; }
+.media-tile.drop-before::before { left: -6.5px; }
+.media-tile.drop-after::after { right: -6.5px; }
+.media-actions, .media-corner { position: absolute; top: 6px; display: flex; gap: 4px; }
+.media-actions { left: 6px; }
+.media-corner { right: 6px; }
+.media-button, .media-icon { display: inline-flex; min-height: 28px; align-items: center; justify-content: center; gap: 5px; border: 1px solid rgb(255 255 255 / 85%); border-radius: 2px; color: #fff; background: rgb(0 0 0 / 78%); cursor: pointer; font-size: 12px; font-weight: 650; }
+.media-button { padding: 3px 8px 3px 6px; }
+.media-icon { width: 28px; padding: 0; }
+.media-button .ui-icon, .media-icon .ui-icon { width: 15px; height: 15px; }
+.media-grip { cursor: grab; }
+/* Edit, Download, the grip and Remove share the top edge: below 190 px, Edit
+   keeps its icon and its label moves to the tooltip. */
+@container (max-width: 190px) { .media-button { width: 28px; padding: 0; } .media-label { display: none; } }
+.media-button:disabled, .media-icon:disabled { opacity: .6; cursor: wait; }
+.media-grid .media-button:focus-visible, .media-grid .media-icon:focus-visible { outline: 2px solid #fff; box-shadow: 0 0 0 4px #111; }
+.media-tile figcaption { margin-top: 5px; color: var(--text-muted); font-size: 12px; line-height: 1.35; }
+/* With a mouse, a tile's buttons show on hover or focus, so they don't cover
+   the picture the rest of the time; touch screens always show them. */
+@media (hover: hover) {
+  .media-actions, .media-corner { opacity: 0; transition: opacity .12s; }
+  .media-tile:hover :is(.media-actions, .media-corner), .media-tile:focus-within :is(.media-actions, .media-corner) { opacity: 1; }
 }
-.media-grid button:focus-visible { outline: 2px solid #fff; box-shadow: 0 0 0 4px #111; }
-.media-grid .media-remove { right: 8px; width: 32px; padding: 0; }
-.media-grid .media-actions { position: absolute; top: 8px; left: 8px; display: flex; gap: 6px; }
-.media-grid .media-actions .media-clip, .media-grid .media-actions .media-download { position: static; padding: 6px 10px; font-weight: 650; }
-.media-grid .media-actions button:disabled { opacity: .6; cursor: wait; }
-.media-grid figcaption { margin-top: 5px; color: var(--text-muted); font-size: 12px; }
+@media (hover: hover) and (prefers-reduced-motion: reduce) { .media-actions, .media-corner { transition: none; } }
+/* Files dragged over Compose can be dropped anywhere on it. */
+.composer-card.is-file-over { outline: 2px dashed var(--ink); outline-offset: -8px; }
 .media-grid .media-busy {
   position: absolute;
   inset: 0;
@@ -340,7 +351,7 @@ input, select { color: var(--ink); background: var(--surface); }
   background: rgba(0, 0, 0, .55);
   pointer-events: none;
 }
-.media-grid figure.is-preparing video { pointer-events: none; }
+.media-tile.is-preparing video { pointer-events: none; }
 .media-grid .media-spinner {
   width: 40px;
   height: 40px;
@@ -501,6 +512,27 @@ input, select { color: var(--ink); background: var(--surface); }
 .studio-actions { display: flex; flex: none; gap: 8px; }
 .studio-actions button { min-width: 112px; justify-content: center; }
 
+/* Text to image: the image's text beside its slides, which are live cards
+   scaled to fit the stage side by side (fitTextCardPreviews). */
+.card-workspace { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); min-height: 0; }
+.card-editor { display: flex; flex-direction: column; min-height: 0; padding: 16px 16px 14px 22px; border-right: 1px solid var(--line-soft); background: var(--surface); }
+.card-editor textarea { flex: 1; min-height: 120px; max-height: none; padding: 12px 14px; field-sizing: fixed; resize: none; font-size: 15px; line-height: 1.5; }
+.card-editor textarea:read-only { color: var(--text-muted); }
+.card-editor-meta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin-top: 8px; color: var(--text-muted); font-size: 12px; }
+.card-credit { min-width: 0; margin: 14px 0 0; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line-soft); }
+.card-credit legend { float: left; width: 100%; margin-bottom: 8px; padding: 0; }
+.card-credit-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; cursor: pointer; }
+.card-credit-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--ink); }
+.card-credit-fields { display: grid; clear: both; grid-template-columns: 1fr 1fr; gap: 10px; }
+.card-credit-fields label { display: grid; min-width: 0; gap: 4px; color: var(--text-muted); font-size: 12px; }
+.card-credit-fields input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 1px; font-size: 14px; }
+.card-credit.is-off .card-credit-fields input { color: var(--text-muted); border-color: var(--line-soft); }
+.card-stage { display: flex; align-items: center; justify-content: center; gap: 20px; }
+.card-slide { flex: none; margin: 0; overflow: hidden; outline: 1px solid rgb(255 255 255 / 10%); box-shadow: 0 10px 34px rgb(0 0 0 / 45%); }
+.card-slide > div { transform-origin: 0 0; }
+.card-swatch { display: inline-grid; flex: none; width: 24px; height: 24px; place-items: center; border: 1px solid var(--line-soft); border-radius: 50%; background: var(--swatch-bg); color: var(--swatch-ink); font-size: 11px; line-height: 1; }
+.chip.active .card-swatch { border-color: var(--ink-inverse); }
+
 /* Video: the frame hugs the picture, so the crop box maps onto video pixels. */
 .clip-frame { position: relative; width: min(100%, 640px); aspect-ratio: 16 / 9; overflow: hidden; background: #000; box-shadow: 0 10px 34px rgb(0 0 0 / 45%); }
 .clip-frame video { display: block; width: 100%; height: 100%; object-fit: contain; cursor: pointer; }
@@ -586,15 +618,20 @@ input, select { color: var(--ink); background: var(--surface); }
   .topbar-settings { padding: 8px; font-size: 0; }
   .topbar-settings .ui-icon { margin: 0; }
   .attach-row { align-items: flex-start; flex-direction: column; }
-  .media-grid { grid-template-columns: 1fr; }
+  .media-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-card { margin: 28px 14px; padding: 24px; }
   .clip-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .clip-actions button { width: 100%; }
-  .studio-dialog { width: 100vw; height: 100dvh; margin: 0; }
+  .studio-dialog { width: 100%; height: 100dvh; margin: 0; }
   .studio { border: 0; }
   .studio-head { padding-left: 14px; }
   .studio-toolbar { padding: 8px 10px; }
   .studio-stage { padding: 14px; }
+  .card-workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .card-editor { padding: 12px 14px; border-right: 0; border-bottom: 1px solid var(--line-soft); }
+  .card-editor textarea { flex: none; height: 6.5em; min-height: 0; }
+  .card-stage { justify-content: safe center; overflow-x: auto; scroll-snap-type: x mandatory; }
+  .card-slide { scroll-snap-align: center; }
   .studio-toolbar .tool > span, .clip-transport-actions .tool > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
   .studio-toolbar .tool, .clip-transport-actions .tool { padding: 6px 9px; }
   .clip-timeline { padding: 10px 12px; }

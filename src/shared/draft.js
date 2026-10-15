@@ -33,7 +33,7 @@ function creditParts(sourceAuthor, sourceNetwork) {
   const author = String(sourceAuthor || "").replace(/\s+/g, " ").trim();
   if (!author) return null;
   const platform = PLATFORM_LABELS[sourceNetwork] || sourceNetworks.find(network => network.id === sourceNetwork)?.label || PLATFORM_LABELS.web;
-  return { prefix: `${author} on ${platform}: `, legacySuffix: `(via ${author} on ${platform})` };
+  return { author, platform, prefix: `${author} on ${platform}: `, legacySuffix: `(via ${author} on ${platform})` };
 }
 
 // The credit leads the post on every destination ("Name on X: text") so it is
@@ -44,6 +44,14 @@ function creditParts(sourceAuthor, sourceNetwork) {
 export function creditPrefix(draft = {}) {
   if (draft.sourceIsOwn === true) return "";
   return creditParts(draft.sourceAuthor, draft.sourceNetwork)?.prefix || "";
+}
+
+// The same credit as a text image's byline: the name, and what follows it
+// ({ author: "Ada", detail: "on X" }); null when the post would carry none.
+export function creditByline(draft = {}) {
+  if (!creditPrefix(draft)) return null;
+  const { author, platform } = creditParts(draft.sourceAuthor, draft.sourceNetwork);
+  return { author, detail: `on ${platform}` };
 }
 
 // The text each destination receives; a post without text gets no credit.

@@ -79,7 +79,8 @@ function historyMedia(sourceMedia = [], storedMedia = []) {
       filename: item.filename || stored.name || "",
       ...(item.trim ? { trim: item.trim } : {}),
       ...(item.crop ? { crop: item.crop } : {}),
-      ...(item.edited ? { edited: true } : {})
+      ...(item.edited ? { edited: true } : {}),
+      ...(item.textCard ? { textCard: item.textCard } : {})
     };
   }).filter(Boolean);
 }

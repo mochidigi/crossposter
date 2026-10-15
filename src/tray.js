@@ -47,17 +47,11 @@ function openFeedback(kind, network = "") {
 }
 
 copyButton.onclick = async () => {
-  await copyText(currentText);
+  try { await navigator.clipboard.writeText(currentText); }
+  catch (error) { showStatus(error instanceof Error ? error.message : "The text could not be copied."); return; }
   copyButton.textContent = "Copied";
   setTimeout(() => { copyButton.textContent = "Copy text"; }, 1400);
 };
-
-async function copyText(value) {
-  try { await navigator.clipboard.writeText(value); return; } catch {}
-  const input = document.createElement("textarea");
-  input.value = value; input.style.cssText = "position:fixed;opacity:0";
-  document.body.appendChild(input); input.select(); document.execCommand("copy"); input.remove();
-}
 
 textCard.addEventListener("dragstart", event => {
   event.dataTransfer.effectAllowed = "copy";
@@ -279,7 +273,6 @@ function mediaCard(file, dragFiles) {
 
 async function copyImageToClipboard(file, button) {
   try {
-    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") throw new Error("Image copying is not supported in this browser.");
     button.disabled = true;
     const blob = file.type === "image/png" ? file : await imageAsPng(file);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
@@ -307,9 +300,7 @@ function dataUrlToFile(item) {
   const match = String(item.dataUrl || "").match(/^data:([^;,]*)(;base64)?,(.*)$/s);
   if (!match) throw new Error("A media item could not be transferred.");
   const type = item.type || match[1] || "application/octet-stream";
-  const binary = match[2] ? atob(match[3]) : decodeURIComponent(match[3]);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  const bytes = match[2] ? Uint8Array.fromBase64(match[3]) : new TextEncoder().encode(decodeURIComponent(match[3]));
   return new File([bytes], item.name || "crossposter-media", { type, lastModified: item.lastModified || Date.now() });
 }
 
@@ -321,5 +312,6 @@ function reportTrayClosed() {
   closeReported = true;
   try { ext.runtime.sendMessage({ type: "NATIVE_TRAY_CLOSED", windowId: panelWindowId }).catch(() => {}); } catch {}
 }
+// pagehide, not unload: Chrome is phasing out unload handlers, and pagehide
+// fires first in every case unload did.
 window.addEventListener("pagehide", reportTrayClosed);
-window.addEventListener("unload", reportTrayClosed);

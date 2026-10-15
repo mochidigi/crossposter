@@ -14,7 +14,9 @@ const ICONS = Object.freeze({
   refresh: '<path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   "mark-start": '<path d="M6 4v16M18 7l-5 5 5 5"/>',
-  "mark-end": '<path d="M18 4v16M6 7l5 5-5 5"/>'
+  "mark-end": '<path d="M18 4v16M6 7l5 5-5 5"/>',
+  grip: '<g fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></g>',
+  "text-image": '<rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path d="M8 8.5h8M12 8.5v8"/>'
 });
 
 export function icon(name, className = "ui-icon") {
